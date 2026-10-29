@@ -187,7 +187,7 @@ class MainActivity : Activity(), Irc.Listener {
         val b = bar ?: return
         b.sub(
             when (Irc.state) {
-                2 -> "Bağlı • ${Irc.myNick}"
+                2 -> "Bağlı • ${Irc.myNick}" + if (Irc.ipHidden) "  •  🔒 IP gizli" else "  •  IP gizleniyor…"
                 1 -> "Bağlanıyor…"
                 else -> "Bağlı değil"
             }

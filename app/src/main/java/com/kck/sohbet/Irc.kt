@@ -55,6 +55,9 @@ object Irc {
     var state = 0
     var myNick = ""
     var lastError = ""
+    /** Sunucu IP adresini gizlediyse (+x / maske) */
+    var ipHidden = false
+    var shownHost = ""
     var activeConv: String? = null
 
     private lateinit var appCtx: Context
@@ -120,6 +123,8 @@ object Irc {
         myNick = nick
         nickServPass = pass
         lastError = ""
+        ipHidden = false
+        shownHost = ""
         listLoaded = false
         channelList.clear()
         add(status(), null, "$host:$port adresine bağlanılıyor…", K_INFO)
@@ -274,6 +279,8 @@ object Irc {
                 state = 2
                 myNick = p(0)
                 add(status(), null, strip(last()), K_INFO)
+                // IP adresini diğer kullanıcılardan gizle (sunucu maskesi)
+                send("MODE $myNick +x")
                 if (nickServPass.isNotBlank()) send("PRIVMSG NickServ :IDENTIFY $nickServPass")
                 // Daha önce girilen odalara yeniden gir
                 for (c in convs.values) if (c.isChannel && c.joined) send("JOIN ${c.name}")
@@ -366,7 +373,14 @@ object Irc {
             }
             "MODE" -> {
                 val t = p(0)
-                if (isChannelName(t)) {
+                if (t.equals(myNick, true)) {
+                    val m = p(1)
+                    val plus = m.substringBefore('-').contains('x') && m.startsWith("+")
+                    val minus = m.startsWith("-") && m.contains('x')
+                    if (plus && !ipHidden) { ipHidden = true; add(status(), null, "🔒 IP adresin gizlendi.", K_INFO) }
+                    if (minus) { ipHidden = false; add(status(), null, "IP gizleme kapatıldı, tekrar açılıyor…", K_ERROR); send("MODE $myNick +x") }
+                    changed()
+                } else if (isChannelName(t)) {
                     val c = conv(t, false)
                     if (c != null) {
                         add(c, null, "$from modu değiştirdi: ${params.drop(1).joinToString(" ")}", K_INFO)
@@ -407,6 +421,11 @@ object Irc {
                     else -> activeOrStatus()
                 }
                 add(c, if (prefix.contains('!')) from else null, text, K_NOTICE)
+            }
+            "396" -> {
+                ipHidden = true
+                shownHost = p(1)
+                add(status(), null, "🔒 IP adresin gizlendi. Diğerleri sadece şunu görür: $shownHost", K_INFO)
             }
             "ERROR" -> add(status(), null, strip(last()), K_ERROR)
             "CAP", "PONG" -> { }
