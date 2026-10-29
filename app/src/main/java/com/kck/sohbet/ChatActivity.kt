@@ -78,6 +78,7 @@ class ChatActivity : Activity(), Irc.Listener {
             setPadding(dp(8), dp(6), dp(8), dp(6))
             clipToPadding = false
             setOnItemClickListener { _, _, pos, _ -> msgMenu(conv.msgs.getOrNull(pos)) }
+            setOnItemLongClickListener { _, _, pos, _ -> msgLongPress(conv.msgs.getOrNull(pos)); true }
         }
         root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -240,15 +241,29 @@ class ChatActivity : Activity(), Irc.Listener {
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("${conv.name} • ${users.size} kişi")
-            .setItems(labels) { _, i -> nickMenu(Irc.bare(users[i])) }
+            .setItems(labels) { _, i -> openPrivate(Irc.bare(users[i])) }
             .setNegativeButton("Kapat", null)
             .show()
     }
 
+    /** Kişinin adına dokununca direkt özel sohbet açılır. */
     private fun msgMenu(m: Irc.Msg?) {
         val n = m?.nick ?: return
         if (n.equals(Irc.myNick, true) || conv.isStatus) return
+        if (conv.isChannel) openPrivate(n) else nickMenu(n)
+    }
+
+    private fun msgLongPress(m: Irc.Msg?) {
+        val n = m?.nick ?: return
+        if (n.equals(Irc.myNick, true) || conv.isStatus) return
         nickMenu(n)
+    }
+
+    private fun openPrivate(nick: String) {
+        if (nick.equals(Irc.myNick, true)) return
+        if (Irc.isBlocked(nick)) { nickMenu(nick); return }
+        val pc = Irc.openPrivate(nick)
+        startActivity(Intent(this, ChatActivity::class.java).putExtra("name", pc.name))
     }
 
     private fun nickMenu(nick: String) {

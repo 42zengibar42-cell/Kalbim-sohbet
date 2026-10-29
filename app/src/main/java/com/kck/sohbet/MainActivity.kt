@@ -305,7 +305,7 @@ class MainActivity : Activity(), Irc.Listener {
             val last = c.msgs.lastOrNull()
             val sub = when {
                 last == null -> if (c.isChannel) "${c.users.size} kişi" else ""
-                last.nick != null -> "${last.nick}: ${last.text}"
+                last.nick != null && last.kind != Irc.K_INFO -> "${last.nick}: ${last.text}"
                 else -> last.text
             }
             if (sub.isNotEmpty()) col.addView(text(sub, 14f, C.DIM).apply {

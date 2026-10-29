@@ -396,7 +396,7 @@ object Irc {
                 for (b in blocked()) send("SILENCE +$b!*@*")
                 if (nickServPass.isNotBlank()) send("PRIVMSG NickServ :IDENTIFY $nickServPass")
                 // Daha önce girilen odalara yeniden gir
-                for (c in convs.values) if (c.isChannel && c.joined) send("JOIN ${c.name}")
+                for (c in convs.values) if (c.isChannel && c.joined && key(c.name) in wantedChannels) send("JOIN ${c.name}")
                 changed()
             }
             "433" -> {
@@ -430,6 +430,11 @@ object Irc {
             }
             "JOIN" -> {
                 val ch = p(0)
+                if (from.equals(myNick, true) && key(ch) !in wantedChannels) {
+                    // Sunucu otomatik bir odaya soktu: kullanıcı kendisi seçmediği için hemen çık
+                    send("PART $ch")
+                    return
+                }
                 val c = conv(ch)!!
                 if (from.equals(myNick, true)) {
                     c.joined = true
@@ -437,7 +442,7 @@ object Irc {
                     add(c, null, "$ch odasına girdin.", K_INFO)
                 } else {
                     if (c.users.none { bare(it).equals(from, true) }) { c.users.add(from); sortUsers(c) }
-                    add(c, null, "$from odaya girdi.", K_INFO)
+                    add(c, from, "$from odaya girdi. (özel mesaj için dokun)", K_INFO)
                     onOtherJoined(ch, from)
                 }
             }
@@ -448,7 +453,7 @@ object Irc {
                     add(c, null, "Odadan çıktın.", K_INFO)
                 } else {
                     c.users.removeAll { bare(it).equals(from, true) }
-                    add(c, null, "$from odadan çıktı.", K_INFO)
+                    add(c, from, "$from odadan çıktı.", K_INFO)
                 }
             }
             "KICK" -> {
@@ -463,7 +468,7 @@ object Irc {
             "QUIT" -> {
                 for (c in convs.values) {
                     if (c.isChannel && c.users.removeAll { bare(it).equals(from, true) })
-                        add(c, null, "$from çıkış yaptı.", K_INFO)
+                        add(c, from, "$from çıkış yaptı.", K_INFO)
                 }
             }
             "NICK" -> {
@@ -607,8 +612,12 @@ object Irc {
         changed()
     }
 
+    /** Kullanıcının kendisinin girmek istediği odalar. Başka odalara otomatik girilmez. */
+    private val wantedChannels = HashSet<String>()
+
     fun join(ch: String) {
         val name = if (isChannelName(ch)) ch else "#$ch"
+        wantedChannels.add(key(name))
         conv(name)!!.joined = true
         send("JOIN $name")
         changed()
@@ -616,6 +625,7 @@ object Irc {
 
     fun part(name: String) {
         val c = conv(name, false) ?: return
+        wantedChannels.remove(key(name))
         if (c.isChannel && c.joined && state == 2) send("PART $name :Görüşürüz")
         convs.remove(key(name))
         changed()
