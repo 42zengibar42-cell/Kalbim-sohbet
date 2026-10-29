@@ -98,6 +98,7 @@ class MainActivity : Activity(), Irc.Listener {
             })
         }
 
+        val serverAt = box.childCount
         box.addView(label("Rumuz"))
         val nick = input("ör. GülBahçesi", prefs.getString("nick", "") ?: "")
         box.addView(nick)
@@ -142,17 +143,38 @@ class MainActivity : Activity(), Irc.Listener {
         adv.addView(ws)
         adv.addView(text("Bağlanamazsa uygulama diğer yaygın portları ve web bağlantısını kendisi dener.", 13f, C.DIM))
 
-        // Hazır sunucular
-        adv.addView(label("Hazır sunucular"))
-        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun preset(name: String, h: String, p: Int, sl: Boolean, w: Boolean) {
-            presets.addView(smallButton(name) {
-                host.setText(h); port.setText(p.toString()); ssl.isChecked = sl; ws.isChecked = w
-            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        // Sunucu seçimi (her zaman görünür, böylece hangi sunucuya girdiğin belli olur)
+        val chooser = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        chooser.addView(label("Sunucu"))
+        val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        chooser.addView(chips)
+        val current = text("", 13f, C.DIM).apply { setPadding(dp(2), dp(6), 0, 0) }
+        chooser.addView(current)
+        val chipViews = ArrayList<Pair<String, TextView>>()
+        fun mark() {
+            val h = host.text.toString().trim().lowercase()
+            for ((ph, v) in chipViews) v.background = rounded(if (ph == h) C.PRIMARY else Color.parseColor("#4A3445"), 18)
+            current.text = "Bağlanılacak: ${host.text} • port ${port.text}" + (if (ws.isChecked) " • web" else "") + (if (ssl.isChecked) " • SSL" else "")
         }
-        preset("Kalbim", "irc.kalbim.net", 6667, false, false)
+        fun preset(name: String, h: String, p: Int, sl: Boolean, w: Boolean) {
+            val v = smallButton(name) {
+                host.setText(h); port.setText(p.toString()); ssl.isChecked = sl; ws.isChecked = w
+                mark()
+            }
+            chipViews.add(h to v)
+            chips.addView(v, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        }
+        preset("💗 Kalbim", "irc.kalbim.net", 6667, false, false)
         preset("Geveze / Nurchat", "irc.geveze.org", 5570, true, true)
-        adv.addView(presets)
+        val watcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+            override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+            override fun afterTextChanged(e: android.text.Editable?) { mark() }
+        }
+        host.addTextChangedListener(watcher); port.addTextChangedListener(watcher)
+        ws.setOnCheckedChangeListener { _, _ -> mark() }
+        mark()
+        box.addView(chooser, serverAt)
         box.addView(adv)
 
         val go = button("Bağlan") {
