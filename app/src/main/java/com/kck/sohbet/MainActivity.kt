@@ -29,6 +29,11 @@ class MainActivity : Activity(), Irc.Listener {
     private var hint: TextView? = null
     private val items = ArrayList<Irc.Conv>()
     private val adapter = ConvAdapter()
+    /** Toplu silme için seçim modu */
+    private var selecting = false
+    private val selected = HashSet<String>()
+    private var selBar: LinearLayout? = null
+    private var selCount: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -175,11 +180,36 @@ class MainActivity : Activity(), Irc.Listener {
             divider = null
             dividerHeight = 0
             adapter = this@MainActivity.adapter
-            setOnItemClickListener { _, _, pos, _ -> openConv(items[pos]) }
-            setOnItemLongClickListener { _, _, pos, _ -> convMenu(items[pos]); true }
+            setOnItemClickListener { _, _, pos, _ ->
+                val c = items[pos]
+                if (selecting) toggleSel(c) else openConv(c)
+            }
+            setOnItemLongClickListener { _, _, pos, _ ->
+                val c = items[pos]
+                if (!c.isStatus) { startSelect(); toggleSel(c) }
+                true
+            }
         }
         list = lv
         root.addView(lv, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        // Alt çubuk: toplu silme
+        val sb = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#22181F"))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            visibility = View.GONE
+        }
+        selCount = text("", 15f, C.TEXT, true)
+        sb.addView(selCount, LinearLayout.LayoutParams(0, -2, 1f))
+        sb.addView(smallButton("Tümü") { selectAll() })
+        sb.addView(View(this), LinearLayout.LayoutParams(dp(6), 1))
+        sb.addView(smallButton("Vazgeç") { endSelect() })
+        sb.addView(View(this), LinearLayout.LayoutParams(dp(6), 1))
+        sb.addView(button("🗑 Sil", C.PRIMARY) { deleteSelected() })
+        selBar = sb
+        root.addView(sb)
         setContentView(root)
     }
 
@@ -197,6 +227,7 @@ class MainActivity : Activity(), Irc.Listener {
             b.action(smallButton("Yeniden bağlan") { reconnect() })
             b.action(smallButton("✕") { Irc.convs.clear(); build() })
         } else {
+            if (Irc.convs.values.any { !it.isStatus }) b.action(smallButton("☑") { if (selecting) endSelect() else startSelect() })
             b.action(smallButton("🚫") { showBlocked() })
             b.action(smallButton("⏻") { confirmDisconnect() })
         }
@@ -205,7 +236,10 @@ class MainActivity : Activity(), Irc.Listener {
         val all = Irc.convs.values.toList()
         items.addAll(all.filter { it.isChannel })
         items.addAll(all.filter { !it.isChannel && !it.isStatus })
-        all.firstOrNull { it.isStatus }?.let { items.add(it) }
+        all.firstOrNull { it.isStatus }?.let { if (!selecting) items.add(it) }
+        selected.retainAll(items.map { Irc.key(it.name) }.toSet())
+        if (selecting && items.isEmpty()) selecting = false
+        updateSelBar()
         adapter.notifyDataSetChanged()
 
         hint?.let {
@@ -217,6 +251,57 @@ class MainActivity : Activity(), Irc.Listener {
                 else -> Irc.lastError
             }
         }
+    }
+
+    private fun startSelect() {
+        if (selecting) return
+        selecting = true
+        selected.clear()
+        refreshHome()
+    }
+
+    private fun endSelect() {
+        selecting = false
+        selected.clear()
+        refreshHome()
+    }
+
+    private fun toggleSel(c: Irc.Conv) {
+        if (c.isStatus) return
+        val k = Irc.key(c.name)
+        if (!selected.remove(k)) selected.add(k)
+        updateSelBar()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun selectAll() {
+        val keys = items.filter { !it.isStatus }.map { Irc.key(it.name) }
+        if (selected.containsAll(keys)) selected.clear() else selected.addAll(keys)
+        updateSelBar()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun updateSelBar() {
+        selBar?.visibility = if (selecting) View.VISIBLE else View.GONE
+        selCount?.text = "${selected.size} seçildi"
+    }
+
+    private fun deleteSelected() {
+        if (selected.isEmpty()) { Toast.makeText(this, "Önce silinecekleri işaretle", Toast.LENGTH_SHORT).show(); return }
+        val names = items.filter { Irc.key(it.name) in selected }.map { it.name }
+        val rooms = names.count { Irc.isChannelName(it) }
+        val pms = names.size - rooms
+        val parts = ArrayList<String>()
+        if (rooms > 0) parts.add("$rooms odadan çıkılacak")
+        if (pms > 0) parts.add("$pms özel sohbet silinecek")
+        AlertDialog.Builder(this)
+            .setMessage(parts.joinToString(", ") + ". Emin misin?")
+            .setPositiveButton("Sil") { _, _ ->
+                for (n in names) Irc.closeConv(n)
+                endSelect()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
     }
 
     private fun reconnect() {
@@ -269,6 +354,11 @@ class MainActivity : Activity(), Irc.Listener {
             .show()
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (selecting) endSelect() else super.onBackPressed()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (isFinishing && Irc.state == 0) Irc.convs.clear()
@@ -287,6 +377,12 @@ class MainActivity : Activity(), Irc.Listener {
                 background = rounded(C.CARD, 12)
                 setPadding(dp(14), dp(12), dp(12), dp(12))
             }
+            if (selecting) {
+                row.addView(android.widget.CheckBox(this@MainActivity).apply {
+                    isChecked = Irc.key(c.name) in selected
+                    isClickable = false; isFocusable = false
+                })
+            }
             val icon = text(
                 when { c.isStatus -> "ℹ"; c.isChannel -> "#"; else -> "👤" }, 20f,
                 if (c.isChannel) C.ACCENT else C.TEXT, true
@@ -298,7 +394,7 @@ class MainActivity : Activity(), Irc.Listener {
             }
             val title = when {
                 c.isStatus -> "Sunucu mesajları"
-                c.isChannel -> c.name.removePrefix("#")
+                c.isChannel -> c.name.removePrefix("#") + if (!c.joined || Irc.state != 2) "  (çıkıldı)" else ""
                 else -> "${c.name} (özel)"
             }
             col.addView(text(title, 17f, C.TEXT, c.unread > 0).apply { setSingleLine(true) })

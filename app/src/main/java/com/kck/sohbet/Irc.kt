@@ -96,6 +96,20 @@ object Irc {
         e.remove("otoMesaj").remove("otoCevap").apply()
     }
 
+    /** Cevap gelmezse gönderilecek 2 takip mesajı (30 sn arayla). */
+    const val FOLLOW_COUNT = 2
+    const val FOLLOW_DELAY = 30_000L
+
+    fun followMsg(i: Int): String = prefs.getString("otoTakip${i + 1}", "") ?: ""
+
+    fun setFollowMsgs(list: List<String>) {
+        val e = prefs.edit()
+        for (i in 0 until FOLLOW_COUNT) e.putString("otoTakip${i + 1}", list.getOrElse(i) { "" }.trim())
+        e.apply()
+    }
+
+    private fun followList(): List<String> = (0 until FOLLOW_COUNT).map { followMsg(it).trim() }.filter { it.isNotEmpty() }
+
     private fun autoList(): List<String> = (0 until AUTO_COUNT).map { autoMsg(it).trim() }.filter { it.isNotEmpty() }
 
     // ---------------- Engelleme ----------------
@@ -110,7 +124,8 @@ object Irc {
         prefs.edit().putStringSet("engelliler", set).apply()
         if (on) {
             awaitingReply.remove(key(bare(nick)))
-            autoQueue.removeAll { key(it.first) == key(bare(nick)) }
+            autoQueue.removeAll { key(it.nick) == key(bare(nick)) }
+            noReply.remove(key(bare(nick)))
             if (state == 2) send("SILENCE +${bare(nick)}!*@*")
         } else if (state == 2) send("SILENCE -${bare(nick)}!*@*")
         changed()
@@ -130,16 +145,20 @@ object Irc {
     /** Otomatik mesaj gönderilip cevabı beklenen kişiler. */
     /** Kişiye gönderilecek sonraki otomatik mesajın sırası. */
     private val awaitingReply = HashMap<String, Int>()
-    private val autoQueue = ArrayDeque<Pair<String, String>>()
+    /** type: 0 = açılış, 1 = takip (cevap gelmedi), 2 = cevap sonrası */
+    private class AutoItem(val nick: String, val text: String, val type: Int)
+    private val autoQueue = ArrayDeque<AutoItem>()
+    /** Henüz cevap vermeyen kişiler → gönderilecek sonraki takip mesajının sırası */
+    private val noReply = HashMap<String, Int>()
     private var autoBusy = false
     private var lastAutoAt = 0L
     private const val AUTO_GAP = 5000L
 
     private fun isService(n: String) = n.endsWith("Serv", true) || n.contains('.')
 
-    private fun queueAuto(nick: String, text: String) {
-        if (autoQueue.size >= 20) return
-        autoQueue.addLast(nick to text)
+    private fun queueAuto(nick: String, text: String, type: Int) {
+        if (autoQueue.size >= 30) return
+        autoQueue.addLast(AutoItem(nick, text, type))
         pumpAuto()
     }
 
@@ -151,11 +170,18 @@ object Irc {
         main.postDelayed({
             autoBusy = false
             val item = autoQueue.removeFirstOrNull() ?: return@postDelayed
-            if (state == 2) {
-                send("PRIVMSG ${item.first} :${item.second}")
+            val k = key(item.nick)
+            val stillWaiting = item.type != 1 || noReply.containsKey(k)
+            if (state == 2 && stillWaiting && !isBlocked(item.nick)) {
+                send("PRIVMSG ${item.nick} :${item.text}")
                 lastAutoAt = System.currentTimeMillis()
-                val c = conv(item.first, false)
-                if (c != null) add(c, myNick, "🤖 " + item.second, K_SELF)
+                val c = conv(item.nick, false)
+                if (c != null) add(c, myNick, "🤖 " + item.text, K_SELF)
+                // Açılış ya da takip mesajından sonra 30 sn içinde cevap gelmezse sıradaki takip mesajı
+                if (item.type != 2 && noReply.containsKey(k)) {
+                    val nick = item.nick
+                    main.postDelayed({ followUp(nick) }, FOLLOW_DELAY)
+                }
             }
             pumpAuto()
         }, wait)
@@ -170,21 +196,34 @@ object Irc {
         if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
         autoSent[k] = System.currentTimeMillis()
         awaitingReply[k] = 1
-        queueAuto(nick, text)
+        if (followList().isNotEmpty()) noReply[k] = 0
+        queueAuto(nick, text, 0)
     }
 
     /** Otomatik mesaj attığımız kişi cevap yazdıysa. */
+    private fun followUp(nick: String) {
+        val k = key(nick)
+        val step = noReply[k] ?: return
+        val list = followList()
+        if (state != 2 || step >= list.size || isBlocked(nick)) { noReply.remove(k); return }
+        noReply[k] = step + 1
+        queueAuto(nick, list[step], 1)
+    }
+
     private fun onPrivateFrom(nick: String, c: Conv) {
         val k = key(nick)
+        // Cevap geldi: takip mesajlarını iptal et
+        noReply.remove(k)
+        autoQueue.removeAll { key(it.nick) == k && it.type == 1 }
         val next = awaitingReply[k] ?: return
         val list = autoList()
         if (c.msgs.isEmpty() && next == 1 && list.isNotEmpty())
             c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 ${list[0]}", K_SELF))
         if (next >= list.size || state != 2) { awaitingReply.remove(k); return }
         // Aynı cevaba birden fazla mesaj gitmesin: sıradaki mesaj gönderilene kadar bekle
-        if (autoQueue.any { key(it.first) == k }) return
+        if (autoQueue.any { key(it.nick) == k }) return
         if (next + 1 >= list.size) awaitingReply.remove(k) else awaitingReply[k] = next + 1
-        queueAuto(nick, list[next])
+        queueAuto(nick, list[next], 2)
     }
 
     fun isChannelName(s: String) = s.startsWith("#") || s.startsWith("&")
@@ -466,6 +505,8 @@ object Irc {
                 } else add(c, null, "$who, $from tarafından atıldı.", K_INFO)
             }
             "QUIT" -> {
+                noReply.remove(key(from)); awaitingReply.remove(key(from))
+                autoQueue.removeAll { key(it.nick) == key(from) }
                 for (c in convs.values) {
                     if (c.isChannel && c.users.removeAll { bare(it).equals(from, true) })
                         add(c, from, "$from çıkış yaptı.", K_INFO)
