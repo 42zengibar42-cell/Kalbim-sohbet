@@ -275,12 +275,19 @@ object Irc {
         list.add(Way(port, ssl, ws))
         if (auto) {
             for (w in listOf(
-                Way(6667, false, false), Way(6697, true, false), Way(5570, false, false),
-                Way(7000, false, false), Way(6668, false, false), Way(6669, false, false),
-                Way(29007, true, true)
+                Way(6667, false, false), Way(6697, true, false),
+                Way(5570, true, true), Way(5570, false, true), Way(29007, true, true),
+                Way(7000, false, false), Way(6668, false, false), Way(6669, false, false)
             )) if (list.none { it.port == w.port && it.ssl == w.ssl && it.ws == w.ws }) list.add(w)
         }
         return list
+    }
+
+    private class Attempt {
+        val gotData = java.util.concurrent.atomic.AtomicBoolean(false)
+        val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile var accepted = false
+        @Volatile var reason = ""
     }
 
     fun connect(host: String, port: Int, ssl: Boolean, nick: String, pass: String, ws: Boolean = false, auto: Boolean = true) {
@@ -300,38 +307,68 @@ object Irc {
             ContextCompat.startForegroundService(appCtx, Intent(appCtx, IrcService::class.java))
         } catch (_: Exception) { }
 
-        val splitter = LineSplitter { bytes, len ->
-            val line = decode(bytes, len)
-            if (line.startsWith("PING")) sendNow("PONG" + line.substring(4))
-            main.post { if (gen == generation) handle(line) }
-        }
         Thread {
             var lastErr: Exception? = null
-            var opened: Conn? = null
+            var silentClose = false
+            var ok = false
             val ways = waysFor(port, ssl, ws, auto)
             for ((idx, w) in ways.withIndex()) {
                 if (gen != generation) return@Thread
                 if (idx > 0) main.post { if (gen == generation) add(status(), null, "Olmadı, $w deneniyor…", K_INFO) }
+                val a = Attempt()
+                val splitter = LineSplitter { bytes, len ->
+                    val line = decode(bytes, len)
+                    if (line.startsWith("PING")) sendNow("PONG" + line.substring(4))
+                    main.post { if (gen == generation) handle(line) }
+                }
+                val c: Conn
                 try {
-                    opened = Conn.open(host, w.port, w.ssl, w.ws, if (idx == 0) 15000 else 8000,
-                        { b, n -> splitter.feed(b, n) },
-                        { reason -> main.post { if (gen == generation) lost(reason) } })
-                    if (idx > 0) main.post {
-                        // Çalışan yolu kaydet, bir dahaki sefere direkt onu kullan
-                        prefs.edit().putInt("port", w.port).putBoolean("ssl", w.ssl).putBoolean("ws", w.ws).apply()
-                    }
-                    main.post { if (gen == generation) add(status(), null, "Bağlandı: $w", K_INFO) }
-                    break
+                    c = Conn.open(host, w.port, w.ssl, w.ws, if (idx == 0) 15000 else 8000,
+                        { b, n -> a.gotData.set(true); splitter.feed(b, n) },
+                        { reason ->
+                            a.reason = reason
+                            a.closed.set(true)
+                            if (a.accepted) main.post { if (gen == generation) lost(reason) }
+                        })
                 } catch (e: Exception) {
                     lastErr = e
                     // Sunucu adı yanlışsa diğer portları denemenin anlamı yok
                     if (e is java.net.UnknownHostException) break
+                    continue
                 }
+                if (gen != generation) { c.close(); return@Thread }
+                conn = c
+                sendNow("NICK $nick")
+                sendNow("USER ${safeIdent(nick)} 0 * :Kalbim Sohbet")
+                // Bu port gerçekten sohbet sunucusu mu? Cevap gelmesini bekle (en fazla 12 sn)
+                val until = System.currentTimeMillis() + 12000
+                while (!a.gotData.get() && !a.closed.get() && System.currentTimeMillis() < until && gen == generation) {
+                    Thread.sleep(100)
+                }
+                if (a.gotData.get() && !a.closed.get()) {
+                    a.accepted = true
+                    ok = true
+                    main.post {
+                        if (gen == generation) add(status(), null, "Bağlandı: $w", K_INFO)
+                        // Çalışan yolu kaydet, bir dahaki sefere direkt onu kullan
+                        prefs.edit().putInt("port", w.port).putBoolean("ssl", w.ssl).putBoolean("ws", w.ws).apply()
+                    }
+                    break
+                }
+                if (a.gotData.get() && a.closed.get()) {
+                    // Sunucu cevap verip kapattı: sebebi sunucu mesajlarında yazar, başka port denemeye gerek yok
+                    conn = null
+                    main.post { if (gen == generation) lost(a.reason) }
+                    return@Thread
+                }
+                silentClose = silentClose || a.closed.get()
+                conn = null
+                c.close()
             }
-            val c = opened
-            if (c == null) {
+            if (!ok) {
                 val e = lastErr
                 val msg = when {
+                    silentClose -> "Sunucu bağlantıyı kabul etti ama hiçbir şey göndermeden kapattı. Bu sunucu sadece kendi sitesinden girişe izin veriyor olabilir."
                     e is java.net.UnknownHostException -> "Sunucu bulunamadı. Adresi kontrol et."
                     e is java.net.SocketTimeoutException -> "Sunucu cevap vermedi (zaman aşımı)."
                     e is java.net.ConnectException -> "Bağlantı reddedildi. Denenen hiçbir port açık değil."
@@ -339,12 +376,7 @@ object Irc {
                     else -> "Bağlanılamadı: ${e?.message ?: "bilinmeyen hata"}"
                 }
                 main.post { if (gen == generation) lost(msg) }
-                return@Thread
             }
-            if (gen != generation) { c.close(); return@Thread }
-            conn = c
-            sendNow("NICK $nick")
-            sendNow("USER ${safeIdent(nick)} 0 * :Kalbim Sohbet")
         }.start()
         changed()
     }

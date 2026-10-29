@@ -151,7 +151,7 @@ class MainActivity : Activity(), Irc.Listener {
             }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
         }
         preset("Kalbim", "irc.kalbim.net", 6667, false, false)
-        preset("Geveze / Nurchat", "irc.geveze.org", 5570, false, false)
+        preset("Geveze / Nurchat", "irc.geveze.org", 5570, true, true)
         adv.addView(presets)
         box.addView(adv)
 
