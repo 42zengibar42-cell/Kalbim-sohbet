@@ -62,6 +62,7 @@ class ChatActivity : Activity(), Irc.Listener {
         bar = TopBar(this, title) { finish() }
         usersBtn = null
         if (conv.isChannel) {
+            bar.action(smallButton("🤖") { autoDialog() })
             usersBtn = smallButton("👥") { showUsers() }
             bar.action(usersBtn!!)
         }
@@ -139,7 +140,7 @@ class ChatActivity : Activity(), Irc.Listener {
                 Irc.state == 0 -> "Bağlantı yok"
                 conv.isStatus -> Irc.myNick
                 conv.isChannel && !conv.joined -> "Odada değilsin"
-                conv.isChannel -> conv.topic.ifEmpty { "${conv.users.size} kişi" }
+                conv.isChannel -> (if (Irc.autoOn(conv.name)) "🤖 Oto mesaj açık • " else "") + conv.topic.ifEmpty { "${conv.users.size} kişi" }
                 else -> "Özel sohbet"
             }
         )
@@ -168,6 +169,47 @@ class ChatActivity : Activity(), Irc.Listener {
             .setMessage(if (conv.isChannel) "${conv.name} odasından çıkılsın mı?" else "Bu özel sohbet kapatılsın mı?")
             .setPositiveButton(if (conv.isChannel) "Çık" else "Kapat") { _, _ ->
                 Irc.closeConv(conv.name); finish()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun autoDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val on = android.widget.CheckBox(this).apply {
+            text = "Bu odaya girenlere otomatik özel mesaj gönder"
+            isChecked = Irc.autoOn(conv.name)
+        }
+        box.addView(on)
+        box.addView(text("Otomatik mesaj", 14f, C.DIM).apply { setPadding(0, dp(12), 0, dp(4)) })
+        val msg = input("ör. Hoş geldin, iyi sohbetler 💗", Irc.autoMsg,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
+        msg.maxLines = 4
+        box.addView(msg)
+        box.addView(text("Cevap gelince gönderilecek mesaj (boş bırakılabilir)", 14f, C.DIM).apply { setPadding(0, dp(12), 0, dp(4)) })
+        val reply = input("ör. Nasılsın? Nerelisin?", Irc.autoReply,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
+        reply.maxLines = 4
+        box.addView(reply)
+        box.addView(text("Aynı kişiye günde en fazla bir kez gider, cevap mesajı da kişi başı bir kez. Mesajlar 5 saniye arayla gönderilir.", 13f, C.DIM).apply {
+            setPadding(0, dp(12), 0, 0)
+        })
+        val scroll = android.widget.ScrollView(this).apply { addView(box) }
+        AlertDialog.Builder(this)
+            .setTitle("🤖 Otomatik mesaj • ${conv.name}")
+            .setView(scroll)
+            .setPositiveButton("Kaydet") { _, _ ->
+                Irc.autoMsg = msg.text.toString().replace("\n", " ").trim()
+                Irc.autoReply = reply.text.toString().replace("\n", " ").trim()
+                val enable = on.isChecked && Irc.autoMsg.isNotEmpty()
+                Irc.setAutoOn(conv.name, enable)
+                android.widget.Toast.makeText(this,
+                    if (enable) "Otomatik mesaj açık" else "Otomatik mesaj kapalı",
+                    android.widget.Toast.LENGTH_SHORT).show()
+                refresh()
             }
             .setNegativeButton("Vazgeç", null)
             .show()

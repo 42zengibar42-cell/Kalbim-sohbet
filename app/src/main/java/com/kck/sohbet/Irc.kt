@@ -75,6 +75,83 @@ object Irc {
 
     fun init(ctx: Context) { appCtx = ctx.applicationContext }
 
+    // ---------------- Otomatik özel mesaj ----------------
+
+    private val prefs get() = appCtx.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
+
+    var autoMsg: String
+        get() = prefs.getString("otoMesaj", "") ?: ""
+        set(v) { prefs.edit().putString("otoMesaj", v).apply() }
+
+    var autoReply: String
+        get() = prefs.getString("otoCevap", "") ?: ""
+        set(v) { prefs.edit().putString("otoCevap", v).apply() }
+
+    fun autoOn(ch: String): Boolean =
+        prefs.getStringSet("otoOdalar", emptySet())!!.contains(key(ch))
+
+    fun setAutoOn(ch: String, on: Boolean) {
+        val set = HashSet(prefs.getStringSet("otoOdalar", emptySet())!!)
+        if (on) set.add(key(ch)) else set.remove(key(ch))
+        prefs.edit().putStringSet("otoOdalar", set).apply()
+    }
+
+    /** Kime ne zaman otomatik mesaj gitti (aynı kişiye günde bir kez). */
+    private val autoSent = HashMap<String, Long>()
+    /** Otomatik mesaj gönderilip cevabı beklenen kişiler. */
+    private val awaitingReply = HashMap<String, String>()
+    private val autoQueue = ArrayDeque<Pair<String, String>>()
+    private var autoBusy = false
+    private var lastAutoAt = 0L
+    private const val AUTO_GAP = 5000L
+
+    private fun isService(n: String) = n.endsWith("Serv", true) || n.contains('.')
+
+    private fun queueAuto(nick: String, text: String) {
+        if (autoQueue.size >= 20) return
+        autoQueue.addLast(nick to text)
+        pumpAuto()
+    }
+
+    /** Sunucuya yüklenmemek için otomatik mesajları en az 5 saniye arayla gönder. */
+    private fun pumpAuto() {
+        if (autoBusy || autoQueue.isEmpty()) return
+        autoBusy = true
+        val wait = maxOf(1500L, lastAutoAt + AUTO_GAP - System.currentTimeMillis())
+        main.postDelayed({
+            autoBusy = false
+            val item = autoQueue.removeFirstOrNull() ?: return@postDelayed
+            if (state == 2) {
+                send("PRIVMSG ${item.first} :${item.second}")
+                lastAutoAt = System.currentTimeMillis()
+                val c = conv(item.first, false)
+                if (c != null) add(c, myNick, "🤖 " + item.second, K_SELF)
+            }
+            pumpAuto()
+        }, wait)
+    }
+
+    private fun onOtherJoined(ch: String, nick: String) {
+        val text = autoMsg.trim()
+        if (text.isEmpty() || !autoOn(ch) || state != 2) return
+        if (nick.equals(myNick, true) || isService(nick)) return
+        val k = key(nick)
+        val last = autoSent[k] ?: 0L
+        if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
+        autoSent[k] = System.currentTimeMillis()
+        awaitingReply[k] = text
+        queueAuto(nick, text)
+    }
+
+    /** Otomatik mesaj attığımız kişi cevap yazdıysa. */
+    private fun onPrivateFrom(nick: String, c: Conv) {
+        val k = key(nick)
+        val first = awaitingReply.remove(k) ?: return
+        if (c.msgs.isEmpty()) c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 $first", K_SELF))
+        val r = autoReply.trim()
+        if (r.isNotEmpty() && state == 2) queueAuto(nick, r)
+    }
+
     fun isChannelName(s: String) = s.startsWith("#") || s.startsWith("&")
 
     fun key(s: String) = s.lowercase()
@@ -325,6 +402,7 @@ object Irc {
                 } else {
                     if (c.users.none { bare(it).equals(from, true) }) { c.users.add(from); sortUsers(c) }
                     add(c, null, "$from odaya girdi.", K_INFO)
+                    onOtherJoined(ch, from)
                 }
             }
             "PART" -> {
@@ -409,6 +487,7 @@ object Irc {
                     }
                 }
                 val c = if (isChannelName(target)) conv(target)!! else if (from.contains('.') && !prefix.contains('!')) status() else conv(from)!!
+                if (!isChannelName(target) && !c.isStatus) onPrivateFrom(from, c)
                 add(c, from, strip(text), kind)
             }
             "NOTICE" -> {
