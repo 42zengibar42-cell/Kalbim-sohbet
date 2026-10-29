@@ -197,6 +197,7 @@ class MainActivity : Activity(), Irc.Listener {
             b.action(smallButton("Yeniden bağlan") { reconnect() })
             b.action(smallButton("✕") { Irc.convs.clear(); build() })
         } else {
+            b.action(smallButton("🚫") { showBlocked() })
             b.action(smallButton("⏻") { confirmDisconnect() })
         }
 
@@ -222,6 +223,25 @@ class MainActivity : Activity(), Irc.Listener {
         val h = prefs.getString("host", "irc.kalbim.net") ?: "irc.kalbim.net"
         Irc.connect(h, prefs.getInt("port", 6667), prefs.getBoolean("ssl", false),
             prefs.getString("nick", "Misafir") ?: "Misafir", prefs.getString("pass", "") ?: "")
+    }
+
+    private fun showBlocked() {
+        val list = Irc.blocked().sorted()
+        if (list.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("🚫 Engellenenler")
+                .setMessage("Kimseyi engellemedin.\nEngellemek için odada kişinin adına ya da mesajına dokun.")
+                .setPositiveButton("Tamam", null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("🚫 Engellenenler (dokun: engeli kaldır)")
+            .setItems(list.toTypedArray()) { _, i ->
+                Irc.setBlocked(list[i], false)
+                Toast.makeText(this, "${list[i]} engeli kaldırıldı", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Kapat", null)
+            .show()
     }
 
     private fun confirmDisconnect() {

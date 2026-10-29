@@ -79,13 +79,42 @@ object Irc {
 
     private val prefs get() = appCtx.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
 
-    var autoMsg: String
-        get() = prefs.getString("otoMesaj", "") ?: ""
-        set(v) { prefs.edit().putString("otoMesaj", v).apply() }
+    const val AUTO_COUNT = 5
 
-    var autoReply: String
-        get() = prefs.getString("otoCevap", "") ?: ""
-        set(v) { prefs.edit().putString("otoCevap", v).apply() }
+    /** 5 otomatik mesaj: 1. odaya girince, 2-5. kişi her cevap yazdığında sırayla. */
+    fun autoMsg(i: Int): String {
+        val p = prefs
+        // Eski sürümden kalan ayarları taşı
+        if (i == 0 && !p.contains("otoMesaj1") && p.contains("otoMesaj")) return p.getString("otoMesaj", "") ?: ""
+        if (i == 1 && !p.contains("otoMesaj2") && p.contains("otoCevap")) return p.getString("otoCevap", "") ?: ""
+        return p.getString("otoMesaj${i + 1}", "") ?: ""
+    }
+
+    fun setAutoMsgs(list: List<String>) {
+        val e = prefs.edit()
+        for (i in 0 until AUTO_COUNT) e.putString("otoMesaj${i + 1}", list.getOrElse(i) { "" }.trim())
+        e.remove("otoMesaj").remove("otoCevap").apply()
+    }
+
+    private fun autoList(): List<String> = (0 until AUTO_COUNT).map { autoMsg(it).trim() }.filter { it.isNotEmpty() }
+
+    // ---------------- Engelleme ----------------
+
+    fun blocked(): Set<String> = prefs.getStringSet("engelliler", emptySet())!!
+
+    fun isBlocked(nick: String) = blocked().contains(key(bare(nick)))
+
+    fun setBlocked(nick: String, on: Boolean) {
+        val set = HashSet(blocked())
+        if (on) set.add(key(bare(nick))) else set.remove(key(bare(nick)))
+        prefs.edit().putStringSet("engelliler", set).apply()
+        if (on) {
+            awaitingReply.remove(key(bare(nick)))
+            autoQueue.removeAll { key(it.first) == key(bare(nick)) }
+            if (state == 2) send("SILENCE +${bare(nick)}!*@*")
+        } else if (state == 2) send("SILENCE -${bare(nick)}!*@*")
+        changed()
+    }
 
     fun autoOn(ch: String): Boolean =
         prefs.getStringSet("otoOdalar", emptySet())!!.contains(key(ch))
@@ -99,7 +128,8 @@ object Irc {
     /** Kime ne zaman otomatik mesaj gitti (aynı kişiye günde bir kez). */
     private val autoSent = HashMap<String, Long>()
     /** Otomatik mesaj gönderilip cevabı beklenen kişiler. */
-    private val awaitingReply = HashMap<String, String>()
+    /** Kişiye gönderilecek sonraki otomatik mesajın sırası. */
+    private val awaitingReply = HashMap<String, Int>()
     private val autoQueue = ArrayDeque<Pair<String, String>>()
     private var autoBusy = false
     private var lastAutoAt = 0L
@@ -132,24 +162,29 @@ object Irc {
     }
 
     private fun onOtherJoined(ch: String, nick: String) {
-        val text = autoMsg.trim()
-        if (text.isEmpty() || !autoOn(ch) || state != 2) return
-        if (nick.equals(myNick, true) || isService(nick)) return
+        val text = autoList().firstOrNull() ?: return
+        if (!autoOn(ch) || state != 2) return
+        if (nick.equals(myNick, true) || isService(nick) || isBlocked(nick)) return
         val k = key(nick)
         val last = autoSent[k] ?: 0L
         if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
         autoSent[k] = System.currentTimeMillis()
-        awaitingReply[k] = text
+        awaitingReply[k] = 1
         queueAuto(nick, text)
     }
 
     /** Otomatik mesaj attığımız kişi cevap yazdıysa. */
     private fun onPrivateFrom(nick: String, c: Conv) {
         val k = key(nick)
-        val first = awaitingReply.remove(k) ?: return
-        if (c.msgs.isEmpty()) c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 $first", K_SELF))
-        val r = autoReply.trim()
-        if (r.isNotEmpty() && state == 2) queueAuto(nick, r)
+        val next = awaitingReply[k] ?: return
+        val list = autoList()
+        if (c.msgs.isEmpty() && next == 1 && list.isNotEmpty())
+            c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 ${list[0]}", K_SELF))
+        if (next >= list.size || state != 2) { awaitingReply.remove(k); return }
+        // Aynı cevaba birden fazla mesaj gitmesin: sıradaki mesaj gönderilene kadar bekle
+        if (autoQueue.any { key(it.first) == k }) return
+        if (next + 1 >= list.size) awaitingReply.remove(k) else awaitingReply[k] = next + 1
+        queueAuto(nick, list[next])
     }
 
     fun isChannelName(s: String) = s.startsWith("#") || s.startsWith("&")
@@ -358,6 +393,7 @@ object Irc {
                 add(status(), null, strip(last()), K_INFO)
                 // IP adresini diğer kullanıcılardan gizle (sunucu maskesi)
                 send("MODE $myNick +x")
+                for (b in blocked()) send("SILENCE +$b!*@*")
                 if (nickServPass.isNotBlank()) send("PRIVMSG NickServ :IDENTIFY $nickServPass")
                 // Daha önce girilen odalara yeniden gir
                 for (c in convs.values) if (c.isChannel && c.joined) send("JOIN ${c.name}")
@@ -486,11 +522,13 @@ object Irc {
                         else -> return
                     }
                 }
+                if (prefix.contains('!') && isBlocked(from)) return
                 val c = if (isChannelName(target)) conv(target)!! else if (from.contains('.') && !prefix.contains('!')) status() else conv(from)!!
                 if (!isChannelName(target) && !c.isStatus) onPrivateFrom(from, c)
                 add(c, from, strip(text), kind)
             }
             "NOTICE" -> {
+                if (prefix.contains('!') && isBlocked(from)) return
                 val text = strip(p(1)).trim('\u0001')
                 val target = p(0)
                 val c = when {
@@ -512,6 +550,7 @@ object Irc {
                 val num = cmd.toIntOrNull()
                 if (num != null) {
                     val text = strip(params.drop(1).joinToString(" "))
+                    if ((num == 421 && p(1).equals("SILENCE", true)) || num == 511) return
                     if (num in 400..599) {
                         val msg = when (num) {
                             401 -> "${p(1)}: böyle bir kişi ya da oda yok."

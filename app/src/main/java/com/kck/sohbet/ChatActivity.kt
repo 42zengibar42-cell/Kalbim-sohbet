@@ -66,6 +66,7 @@ class ChatActivity : Activity(), Irc.Listener {
             usersBtn = smallButton("👥") { showUsers() }
             bar.action(usersBtn!!)
         }
+        if (!conv.isChannel && !conv.isStatus) bar.action(smallButton("🚫") { confirmBlock(conv.name) })
         if (!conv.isStatus) bar.action(smallButton("✕") { confirmClose() })
         root.addView(bar)
 
@@ -184,17 +185,24 @@ class ChatActivity : Activity(), Irc.Listener {
             isChecked = Irc.autoOn(conv.name)
         }
         box.addView(on)
-        box.addView(text("Otomatik mesaj", 14f, C.DIM).apply { setPadding(0, dp(12), 0, dp(4)) })
-        val msg = input("ör. Hoş geldin, iyi sohbetler 💗", Irc.autoMsg,
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
-        msg.maxLines = 4
-        box.addView(msg)
-        box.addView(text("Cevap gelince gönderilecek mesaj (boş bırakılabilir)", 14f, C.DIM).apply { setPadding(0, dp(12), 0, dp(4)) })
-        val reply = input("ör. Nasılsın? Nerelisin?", Irc.autoReply,
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
-        reply.maxLines = 4
-        box.addView(reply)
-        box.addView(text("Aynı kişiye günde en fazla bir kez gider, cevap mesajı da kişi başı bir kez. Mesajlar 5 saniye arayla gönderilir.", 13f, C.DIM).apply {
+        val titles = arrayOf(
+            "1. mesaj – odaya girince gönderilir",
+            "2. mesaj – ilk cevabı gelince",
+            "3. mesaj – ikinci cevabı gelince",
+            "4. mesaj – üçüncü cevabı gelince",
+            "5. mesaj – dördüncü cevabı gelince"
+        )
+        val hints = arrayOf("ör. Hoş geldin, iyi sohbetler 💗", "ör. Nasılsın?", "ör. Nerelisin?", "", "")
+        val boxes = ArrayList<android.widget.EditText>()
+        for (i in 0 until Irc.AUTO_COUNT) {
+            box.addView(text(titles[i], 14f, C.DIM).apply { setPadding(0, dp(12), 0, dp(4)) })
+            val e = input(hints[i], Irc.autoMsg(i),
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
+            e.maxLines = 4
+            box.addView(e)
+            boxes.add(e)
+        }
+        box.addView(text("Boş bıraktığın kutular atlanır. Aynı kişiye günde en fazla bir kez başlar; mesajlar 5 saniye arayla gider. Engellediğin kişilere gitmez.", 13f, C.DIM).apply {
             setPadding(0, dp(12), 0, 0)
         })
         val scroll = android.widget.ScrollView(this).apply { addView(box) }
@@ -202,9 +210,9 @@ class ChatActivity : Activity(), Irc.Listener {
             .setTitle("🤖 Otomatik mesaj • ${conv.name}")
             .setView(scroll)
             .setPositiveButton("Kaydet") { _, _ ->
-                Irc.autoMsg = msg.text.toString().replace("\n", " ").trim()
-                Irc.autoReply = reply.text.toString().replace("\n", " ").trim()
-                val enable = on.isChecked && Irc.autoMsg.isNotEmpty()
+                val list = boxes.map { it.text.toString().replace("\n", " ").trim() }
+                Irc.setAutoMsgs(list)
+                val enable = on.isChecked && list.any { it.isNotEmpty() }
                 Irc.setAutoOn(conv.name, enable)
                 android.widget.Toast.makeText(this,
                     if (enable) "Otomatik mesaj açık" else "Otomatik mesaj kapalı",
@@ -228,7 +236,7 @@ class ChatActivity : Activity(), Irc.Listener {
                 p.startsWith("+") -> "🎤 "
                 else -> ""
             }
-            badge + Irc.bare(u)
+            badge + Irc.bare(u) + if (Irc.isBlocked(u)) "  🚫" else ""
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("${conv.name} • ${users.size} kişi")
@@ -245,20 +253,47 @@ class ChatActivity : Activity(), Irc.Listener {
 
     private fun nickMenu(nick: String) {
         if (nick.equals(Irc.myNick, true)) return
-        val opts = if (conv.isChannel) arrayOf("💬 Özel mesaj gönder", "@ Adını yaz") else arrayOf("@ Adını yaz")
+        val blocked = Irc.isBlocked(nick)
+        val opts = ArrayList<String>()
+        if (conv.isChannel && !blocked) opts.add("💬 Özel mesaj gönder")
+        if (!blocked) opts.add("@ Adını yaz")
+        opts.add(if (blocked) "✅ Engeli kaldır" else "🚫 Engelle")
         AlertDialog.Builder(this)
             .setTitle(nick)
-            .setItems(opts) { _, i ->
-                if (opts[i].startsWith("💬")) {
-                    val pc = Irc.openPrivate(nick)
-                    startActivity(Intent(this, ChatActivity::class.java).putExtra("name", pc.name))
-                } else {
-                    val cur = edit.text.toString()
-                    edit.setText(if (cur.isEmpty()) "$nick: " else "$cur $nick ")
-                    edit.setSelection(edit.text.length)
-                    edit.requestFocus()
+            .setItems(opts.toTypedArray()) { _, i ->
+                val o = opts[i]
+                when {
+                    o.startsWith("💬") -> {
+                        val pc = Irc.openPrivate(nick)
+                        startActivity(Intent(this, ChatActivity::class.java).putExtra("name", pc.name))
+                    }
+                    o.startsWith("🚫") -> confirmBlock(nick)
+                    o.startsWith("✅") -> {
+                        Irc.setBlocked(nick, false)
+                        android.widget.Toast.makeText(this, "$nick engeli kaldırıldı", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        val cur = edit.text.toString()
+                        edit.setText(if (cur.isEmpty()) "$nick: " else "$cur $nick ")
+                        edit.setSelection(edit.text.length)
+                        edit.requestFocus()
+                    }
                 }
             }
+            .show()
+    }
+
+    private fun confirmBlock(nick: String) {
+        AlertDialog.Builder(this)
+            .setMessage("$nick engellensin mi?\nMesajlarını artık görmezsin, sana özelden yazamaz.")
+            .setPositiveButton("Engelle") { _, _ ->
+                Irc.setBlocked(nick, true)
+                android.widget.Toast.makeText(this, "$nick engellendi", android.widget.Toast.LENGTH_SHORT).show()
+                if (!conv.isChannel && !conv.isStatus && Irc.key(conv.name) == Irc.key(nick)) {
+                    Irc.closeConv(conv.name); finish()
+                }
+            }
+            .setNegativeButton("Vazgeç", null)
             .show()
     }
 
