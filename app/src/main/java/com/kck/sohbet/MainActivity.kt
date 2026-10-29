@@ -133,6 +133,26 @@ class MainActivity : Activity(), Irc.Listener {
             }
         }
         adv.addView(ssl)
+        val ws = CheckBox(this).apply {
+            text = "Web bağlantısı (WebSocket – web sohbet sitelerinin kullandığı)"
+            setTextColor(C.TEXT)
+            isChecked = prefs.getBoolean("ws", false)
+            setPadding(dp(4), dp(4), 0, dp(10))
+        }
+        adv.addView(ws)
+        adv.addView(text("Bağlanamazsa uygulama diğer yaygın portları ve web bağlantısını kendisi dener.", 13f, C.DIM))
+
+        // Hazır sunucular
+        adv.addView(label("Hazır sunucular"))
+        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun preset(name: String, h: String, p: Int, sl: Boolean, w: Boolean) {
+            presets.addView(smallButton(name) {
+                host.setText(h); port.setText(p.toString()); ssl.isChecked = sl; ws.isChecked = w
+            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        }
+        preset("Kalbim", "irc.kalbim.net", 6667, false, false)
+        preset("Geveze / Nurchat", "irc.geveze.org", 5570, false, false)
+        adv.addView(presets)
         box.addView(adv)
 
         val go = button("Bağlan") {
@@ -143,9 +163,9 @@ class MainActivity : Activity(), Irc.Listener {
             val pt = port.text.toString().toIntOrNull() ?: 6667
             prefs.edit()
                 .putString("nick", n).putString("pass", pass.text.toString())
-                .putString("host", h).putInt("port", pt).putBoolean("ssl", ssl.isChecked)
+                .putString("host", h).putInt("port", pt).putBoolean("ssl", ssl.isChecked).putBoolean("ws", ws.isChecked)
                 .apply()
-            Irc.connect(h, pt, ssl.isChecked, n, pass.text.toString())
+            Irc.connect(h, pt, ssl.isChecked, n, pass.text.toString(), ws.isChecked)
             build()
         }
         box.addView(go, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(26) })
@@ -307,7 +327,8 @@ class MainActivity : Activity(), Irc.Listener {
     private fun reconnect() {
         val h = prefs.getString("host", "irc.kalbim.net") ?: "irc.kalbim.net"
         Irc.connect(h, prefs.getInt("port", 6667), prefs.getBoolean("ssl", false),
-            prefs.getString("nick", "Misafir") ?: "Misafir", prefs.getString("pass", "") ?: "")
+            prefs.getString("nick", "Misafir") ?: "Misafir", prefs.getString("pass", "") ?: "",
+            prefs.getBoolean("ws", false))
     }
 
     private fun showBlocked() {

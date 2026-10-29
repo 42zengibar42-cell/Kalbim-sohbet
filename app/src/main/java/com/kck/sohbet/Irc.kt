@@ -66,8 +66,7 @@ object Irc {
     private val sendExec = Executors.newSingleThreadExecutor()
     private val namesBuf = HashMap<String, ArrayList<String>>()
 
-    @Volatile private var socket: Socket? = null
-    @Volatile private var out: OutputStream? = null
+    @Volatile private var conn: Conn? = null
     @Volatile private var generation = 0
     private var wantedNick = ""
     private var nickServPass = ""
@@ -266,7 +265,25 @@ object Irc {
 
     // ---------------- Bağlantı ----------------
 
-    fun connect(host: String, port: Int, ssl: Boolean, nick: String, pass: String) {
+    /** Bağlanmayı denenecek yollar: önce kullanıcının seçtiği, sonra yaygın portlar ve web bağlantısı. */
+    private class Way(val port: Int, val ssl: Boolean, val ws: Boolean) {
+        override fun toString() = (if (ws) (if (ssl) "web (wss) " else "web (ws) ") else "") + "port $port" + if (ssl && !ws) " SSL" else ""
+    }
+
+    private fun waysFor(port: Int, ssl: Boolean, ws: Boolean, auto: Boolean): List<Way> {
+        val list = ArrayList<Way>()
+        list.add(Way(port, ssl, ws))
+        if (auto) {
+            for (w in listOf(
+                Way(6667, false, false), Way(6697, true, false), Way(5570, false, false),
+                Way(7000, false, false), Way(6668, false, false), Way(6669, false, false),
+                Way(29007, true, true)
+            )) if (list.none { it.port == w.port && it.ssl == w.ssl && it.ws == w.ws }) list.add(w)
+        }
+        return list
+    }
+
+    fun connect(host: String, port: Int, ssl: Boolean, nick: String, pass: String, ws: Boolean = false, auto: Boolean = true) {
         disconnect(quiet = true)
         val gen = ++generation
         state = 1
@@ -278,52 +295,56 @@ object Irc {
         shownHost = ""
         listLoaded = false
         channelList.clear()
-        add(status(), null, "$host:$port adresine bağlanılıyor…", K_INFO)
+        add(status(), null, "$host adresine bağlanılıyor…", K_INFO)
         try {
             ContextCompat.startForegroundService(appCtx, Intent(appCtx, IrcService::class.java))
         } catch (_: Exception) { }
 
+        val splitter = LineSplitter { bytes, len ->
+            val line = decode(bytes, len)
+            if (line.startsWith("PING")) sendNow("PONG" + line.substring(4))
+            main.post { if (gen == generation) handle(line) }
+        }
         Thread {
-            try {
-                val s: Socket = if (ssl) {
-                    val raw = Socket()
-                    raw.connect(InetSocketAddress(host, port), 20000)
-                    (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(raw, host, port, true)
-                } else {
-                    Socket().also { it.connect(InetSocketAddress(host, port), 20000) }
+            var lastErr: Exception? = null
+            var opened: Conn? = null
+            val ways = waysFor(port, ssl, ws, auto)
+            for ((idx, w) in ways.withIndex()) {
+                if (gen != generation) return@Thread
+                if (idx > 0) main.post { if (gen == generation) add(status(), null, "Olmadı, $w deneniyor…", K_INFO) }
+                try {
+                    opened = Conn.open(host, w.port, w.ssl, w.ws, if (idx == 0) 15000 else 8000,
+                        { b, n -> splitter.feed(b, n) },
+                        { reason -> main.post { if (gen == generation) lost(reason) } })
+                    if (idx > 0) main.post {
+                        // Çalışan yolu kaydet, bir dahaki sefere direkt onu kullan
+                        prefs.edit().putInt("port", w.port).putBoolean("ssl", w.ssl).putBoolean("ws", w.ws).apply()
+                    }
+                    main.post { if (gen == generation) add(status(), null, "Bağlandı: $w", K_INFO) }
+                    break
+                } catch (e: Exception) {
+                    lastErr = e
+                    // Sunucu adı yanlışsa diğer portları denemenin anlamı yok
+                    if (e is java.net.UnknownHostException) break
                 }
-                s.keepAlive = true
-                socket = s
-                out = s.getOutputStream()
-                sendNow("NICK $nick")
-                sendNow("USER ${safeIdent(nick)} 0 * :Kalbim Sohbet")
-                val input = BufferedInputStream(s.getInputStream())
-                val buf = ByteArrayOutputStream(512)
-                while (true) {
-                    val b = input.read()
-                    if (b < 0) break
-                    if (b == '\n'.code) {
-                        val bytes = buf.toByteArray()
-                        buf.reset()
-                        var len = bytes.size
-                        if (len > 0 && bytes[len - 1] == '\r'.code.toByte()) len--
-                        if (len == 0) continue
-                        val line = decode(bytes, len)
-                        if (line.startsWith("PING")) sendNow("PONG" + line.substring(4))
-                        main.post { if (gen == generation) handle(line) }
-                    } else buf.write(b)
-                }
-                main.post { if (gen == generation) lost("Sunucu bağlantıyı kapattı.") }
-            } catch (e: Exception) {
+            }
+            val c = opened
+            if (c == null) {
+                val e = lastErr
                 val msg = when {
                     e is java.net.UnknownHostException -> "Sunucu bulunamadı. Adresi kontrol et."
                     e is java.net.SocketTimeoutException -> "Sunucu cevap vermedi (zaman aşımı)."
-                    e is java.net.ConnectException -> "Bağlantı reddedildi. Port numarasını kontrol et."
-                    e is javax.net.ssl.SSLException -> "SSL hatası. SSL ayarını kapatıp port 6667 dene."
-                    else -> "Bağlantı koptu: ${e.message ?: e.javaClass.simpleName}"
+                    e is java.net.ConnectException -> "Bağlantı reddedildi. Denenen hiçbir port açık değil."
+                    e is javax.net.ssl.SSLException -> "SSL hatası."
+                    else -> "Bağlanılamadı: ${e?.message ?: "bilinmeyen hata"}"
                 }
                 main.post { if (gen == generation) lost(msg) }
+                return@Thread
             }
+            if (gen != generation) { c.close(); return@Thread }
+            conn = c
+            sendNow("NICK $nick")
+            sendNow("USER ${safeIdent(nick)} 0 * :Kalbim Sohbet")
         }.start()
         changed()
     }
@@ -337,7 +358,7 @@ object Irc {
         if (state == 0) return
         state = 0
         lastError = reason
-        closeSocket()
+        closeConn()
         for (c in convs.values) {
             if (c.isChannel) c.users.clear()
         }
@@ -347,17 +368,16 @@ object Irc {
     }
 
     fun disconnect(quiet: Boolean = false) {
-        if (state == 0 && socket == null) return
+        if (state == 0 && conn == null) return
         generation++
-        val s = socket
-        val o = out
-        if (s != null) {
+        val c = conn
+        if (c != null) {
             sendExec.execute {
-                try { o?.write("QUIT :Görüşürüz\r\n".toByteArray()); o?.flush() } catch (_: Exception) { }
-                try { s.close() } catch (_: Exception) { }
+                try { c.write("QUIT :Görüşürüz\r\n".toByteArray()) } catch (_: Exception) { }
+                c.close()
             }
         }
-        socket = null; out = null
+        conn = null
         state = 0
         for (c in convs.values) if (c.isChannel) c.users.clear()
         if (!quiet) add(status(), null, "Bağlantı kesildi.", K_INFO)
@@ -365,10 +385,10 @@ object Irc {
         changed()
     }
 
-    private fun closeSocket() {
-        val s = socket
-        socket = null; out = null
-        if (s != null) sendExec.execute { try { s.close() } catch (_: Exception) { } }
+    private fun closeConn() {
+        val c = conn
+        conn = null
+        if (c != null) sendExec.execute { c.close() }
     }
 
     private fun stopService() {
@@ -377,8 +397,7 @@ object Irc {
 
     private fun sendNow(line: String) {
         try {
-            out?.write((line.replace("\r", "").replace("\n", " ") + "\r\n").toByteArray(Charsets.UTF_8))
-            out?.flush()
+            conn?.write((line.replace("\r", "").replace("\n", " ") + "\r\n").toByteArray(Charsets.UTF_8))
         } catch (_: Exception) { }
     }
 
