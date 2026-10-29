@@ -1,0 +1,263 @@
+package com.kck.sohbet
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.os.Bundle
+import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.widget.AbsListView
+import android.widget.BaseAdapter
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class ChatActivity : Activity(), Irc.Listener {
+
+    private lateinit var conv: Irc.Conv
+    private lateinit var bar: TopBar
+    private lateinit var list: ListView
+    private lateinit var edit: EditText
+    private var usersBtn: TextView? = null
+    private val adapter = MsgAdapter()
+    private var count = 0
+    private val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val name = intent.getStringExtra("name") ?: Irc.STATUS
+        conv = Irc.conv(name)!!
+        build()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        conv = Irc.conv(intent.getStringExtra("name") ?: Irc.STATUS)!!
+        build()
+        onResume()
+    }
+
+    private fun build() {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.BG) }
+        val title = when {
+            conv.isStatus -> "Sunucu mesajları"
+            conv.isChannel -> conv.name
+            else -> conv.name
+        }
+        bar = TopBar(this, title) { finish() }
+        usersBtn = null
+        if (conv.isChannel) {
+            usersBtn = smallButton("👥") { showUsers() }
+            bar.action(usersBtn!!)
+        }
+        if (!conv.isStatus) bar.action(smallButton("✕") { confirmClose() })
+        root.addView(bar)
+
+        list = ListView(this).apply {
+            divider = null; dividerHeight = 0
+            isStackFromBottom = true
+            transcriptMode = AbsListView.TRANSCRIPT_MODE_NORMAL
+            adapter = this@ChatActivity.adapter
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            clipToPadding = false
+            setOnItemClickListener { _, _, pos, _ -> msgMenu(conv.msgs.getOrNull(pos)) }
+        }
+        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#22181F"))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        edit = input(
+            if (conv.isStatus) "Komut yaz (ör. /join #oda)" else "Mesaj yaz…", "",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        ).apply {
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            setOnEditorActionListener { _, id, ev ->
+                if (id == EditorInfo.IME_ACTION_SEND || (ev?.keyCode == KeyEvent.KEYCODE_ENTER && ev.action == KeyEvent.ACTION_DOWN)) {
+                    sendText(); true
+                } else false
+            }
+        }
+        bottom.addView(edit, LinearLayout.LayoutParams(0, -2, 1f))
+        val send = text("➤", 22f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(C.PRIMARY, 24)
+            setOnClickListener { sendText() }
+        }
+        bottom.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(8) })
+        root.addView(bottom)
+        setContentView(root)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Irc.activeConv = Irc.key(conv.name)
+        Irc.addListener(this)
+        refresh()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (Irc.activeConv == Irc.key(conv.name)) Irc.activeConv = null
+        Irc.removeListener(this)
+    }
+
+    override fun onIrcChanged() = refresh()
+
+    private fun refresh() {
+        // Sohbet kapatıldıysa (ör. başka ekrandan) bu ekranı kapat
+        if (Irc.convs.values.none { it === conv }) {
+            if (Irc.state == 0 || !conv.isStatus) { finish(); return }
+        }
+        conv.unread = 0
+        conv.mention = false
+        bar.titleView.text = when {
+            conv.isStatus -> "Sunucu mesajları"
+            else -> conv.name
+        }
+        bar.sub(
+            when {
+                Irc.state == 1 -> "Bağlanıyor…"
+                Irc.state == 0 -> "Bağlantı yok"
+                conv.isStatus -> Irc.myNick
+                conv.isChannel && !conv.joined -> "Odada değilsin"
+                conv.isChannel -> conv.topic.ifEmpty { "${conv.users.size} kişi" }
+                else -> "Özel sohbet"
+            }
+        )
+        usersBtn?.text = "👥 ${conv.users.size}"
+        if (conv.msgs.size != count) {
+            count = conv.msgs.size
+            adapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun sendText() {
+        val t = edit.text.toString()
+        if (t.isBlank()) return
+        if (Irc.state != 2) {
+            edit.error = "Bağlı değilsin"
+            return
+        }
+        if (conv.isChannel && !conv.joined && !t.startsWith("/")) Irc.join(conv.name)
+        Irc.say(conv.name, t)
+        edit.setText("")
+        list.post { list.setSelection(adapter.count - 1) }
+    }
+
+    private fun confirmClose() {
+        AlertDialog.Builder(this)
+            .setMessage(if (conv.isChannel) "${conv.name} odasından çıkılsın mı?" else "Bu özel sohbet kapatılsın mı?")
+            .setPositiveButton(if (conv.isChannel) "Çık" else "Kapat") { _, _ ->
+                Irc.closeConv(conv.name); finish()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun showUsers() {
+        val users = conv.users.toList()
+        if (users.isEmpty()) return
+        val labels = users.map { u ->
+            val p = Irc.prefixOf(u)
+            val badge = when {
+                p.startsWith("~") -> "👑 "
+                p.startsWith("&") -> "⭐ "
+                p.startsWith("@") -> "🛡 "
+                p.startsWith("%") -> "🔰 "
+                p.startsWith("+") -> "🎤 "
+                else -> ""
+            }
+            badge + Irc.bare(u)
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("${conv.name} • ${users.size} kişi")
+            .setItems(labels) { _, i -> nickMenu(Irc.bare(users[i])) }
+            .setNegativeButton("Kapat", null)
+            .show()
+    }
+
+    private fun msgMenu(m: Irc.Msg?) {
+        val n = m?.nick ?: return
+        if (n.equals(Irc.myNick, true) || conv.isStatus) return
+        nickMenu(n)
+    }
+
+    private fun nickMenu(nick: String) {
+        if (nick.equals(Irc.myNick, true)) return
+        val opts = if (conv.isChannel) arrayOf("💬 Özel mesaj gönder", "@ Adını yaz") else arrayOf("@ Adını yaz")
+        AlertDialog.Builder(this)
+            .setTitle(nick)
+            .setItems(opts) { _, i ->
+                if (opts[i].startsWith("💬")) {
+                    val pc = Irc.openPrivate(nick)
+                    startActivity(Intent(this, ChatActivity::class.java).putExtra("name", pc.name))
+                } else {
+                    val cur = edit.text.toString()
+                    edit.setText(if (cur.isEmpty()) "$nick: " else "$cur $nick ")
+                    edit.setSelection(edit.text.length)
+                    edit.requestFocus()
+                }
+            }
+            .show()
+    }
+
+    private inner class MsgAdapter : BaseAdapter() {
+        override fun getCount() = conv.msgs.size
+        override fun getItem(p: Int) = conv.msgs[p]
+        override fun getItemId(p: Int) = p.toLong()
+
+        override fun getView(pos: Int, convertView: View?, parent: ViewGroup?): View {
+            val tv = (convertView as? TextView) ?: TextView(this@ChatActivity).apply {
+                textSize = 16f
+                setTextColor(C.TEXT)
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+                setLineSpacing(0f, 1.1f)
+            }
+            val m = conv.msgs[pos]
+            val sb = SpannableStringBuilder()
+            fun span(s: String, color: Int, bold: Boolean = false) {
+                val st = sb.length
+                sb.append(s)
+                sb.setSpan(ForegroundColorSpan(color), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                if (bold) sb.setSpan(StyleSpan(Typeface.BOLD), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            span(timeFmt.format(Date(m.time)) + "  ", C.DIM)
+            when (m.kind) {
+                Irc.K_INFO -> span("• " + m.text, C.INFO)
+                Irc.K_ERROR -> span("⚠ " + m.text, C.ERROR)
+                Irc.K_ACTION -> span("✱ ${m.nick} ${m.text}", if (m.nick == Irc.myNick) C.ME else C.nick(m.nick ?: ""), false)
+                Irc.K_NOTICE -> {
+                    if (m.nick != null) span("-${m.nick}- ", C.NOTICE, true)
+                    span(m.text, C.NOTICE)
+                }
+                else -> {
+                    val mine = m.kind == Irc.K_SELF
+                    span((m.nick ?: "") + ": ", if (mine) C.ME else C.nick(m.nick ?: ""), true)
+                    val hi = !mine && Irc.myNick.isNotEmpty() && m.text.contains(Irc.myNick, true)
+                    span(m.text, if (hi) C.ACCENT else C.TEXT, hi)
+                }
+            }
+            tv.text = sb
+            return tv
+        }
+    }
+}
