@@ -293,6 +293,33 @@ object Irc {
         queueAuto(nick, pick, 2)
     }
 
+    // ---------------- Kişinin nereden bağlandığı ----------------
+
+    /** rumuz → sunucunun gösterdiği adres (ör. Kalbim-1A2B.dip0.t-ipconnect.de) */
+    private val hosts = HashMap<String, String>()
+
+    fun hostOf(nick: String): String? = hosts[key(bare(nick))]
+
+    /** Adresin sonundaki ülke kodu ("DE", "TR"…). Sadece IP görünüyorsa ya da .com/.net ise null. */
+    fun countryOf(nick: String): String? {
+        val h = hostOf(nick)?.lowercase()?.trimEnd('.') ?: return null
+        if (!h.contains('.') || h.endsWith(".ip") || Regex("^[0-9.:]+$").matches(h) || h.contains(':')) return null
+        val tld = h.substringAfterLast('.')
+        return if (tld.length == 2 && tld.all { it in 'a'..'z' }) tld.uppercase() else null
+    }
+
+    /** 0 = Almanya (.de), 1 = yurt dışı, 2 = bilinmiyor */
+    fun originOf(nick: String): Int = when (val c = countryOf(nick)) {
+        null -> 2
+        "DE" -> 0
+        else -> 1
+    }
+
+    fun flag(code: String?): String {
+        if (code == null || code.length != 2) return ""
+        return String(Character.toChars(0x1F1E6 + (code[0] - 'A'))) + String(Character.toChars(0x1F1E6 + (code[1] - 'A')))
+    }
+
     fun isChannelName(s: String) = s.startsWith("#") || s.startsWith("&")
 
     fun key(s: String) = s.lowercase()
@@ -594,13 +621,18 @@ object Irc {
                     return
                 }
                 val c = conv(ch)!!
+                if (prefix.contains('@')) hosts[key(from)] = prefix.substringAfter('@')
                 if (from.equals(myNick, true)) {
                     c.joined = true
                     c.users.clear()
                     add(c, null, "$ch odasına girdin.", K_INFO)
+                    // Odadakilerin adreslerini öğren (nereden bağlandıkları)
+                    send("WHO $ch")
                 } else {
                     if (c.users.none { bare(it).equals(from, true) }) { c.users.add(from); sortUsers(c) }
-                    add(c, from, "$from odaya girdi. (özel mesaj için dokun)", K_INFO)
+                    val cc = countryOf(from)
+                    val where = when (cc) { null -> "" ; "DE" -> " ${flag(cc)}" ; else -> " ${flag(cc)} yurt dışı" }
+                    add(c, from, "$from odaya girdi.$where (özel mesaj için dokun)", K_INFO)
                     onOtherJoined(ch, from)
                 }
             }
@@ -624,7 +656,7 @@ object Irc {
                 } else add(c, null, "$who, $from tarafından atıldı.", K_INFO)
             }
             "QUIT" -> {
-                noReply.remove(key(from)); awaitingReply.remove(key(from)); usedPool.remove(key(from))
+                noReply.remove(key(from)); awaitingReply.remove(key(from)); usedPool.remove(key(from)); hosts.remove(key(from))
                 autoQueue.removeAll { key(it.nick) == key(from) }
                 for (c in convs.values) {
                     if (c.isChannel && c.users.removeAll { bare(it).equals(from, true) })
@@ -646,6 +678,7 @@ object Irc {
                         add(c, null, "$from artık $nn olarak biliniyor.", K_INFO)
                     }
                 }
+                hosts.remove(key(from))?.let { hosts[key(nn)] = it }
                 val pm = convs.remove(key(from))
                 if (pm != null && !pm.isChannel && !pm.isStatus) { pm.name = nn; convs[key(nn)] = pm }
                 changed()
@@ -710,6 +743,12 @@ object Irc {
                 add(status(), null, "🔒 IP adresin gizlendi. Diğerleri sadece şunu görür: $shownHost", K_INFO)
             }
             "ERROR" -> add(status(), null, strip(last()), K_ERROR)
+            "352" -> {
+                // WHO cevabı: ben kanal kullanıcı adres sunucu rumuz ...
+                if (p(5).isNotEmpty() && p(3).isNotEmpty()) hosts[key(p(5))] = p(3)
+                changed()
+            }
+            "315" -> { }
             "CAP", "PONG" -> { }
             else -> {
                 val num = cmd.toIntOrNull()

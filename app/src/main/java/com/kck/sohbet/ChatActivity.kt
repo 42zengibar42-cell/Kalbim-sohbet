@@ -275,7 +275,7 @@ class ChatActivity : Activity(), Irc.Listener {
     private fun showUsers() {
         val users = conv.users.toList()
         if (users.isEmpty()) return
-        val labels = users.map { u ->
+        fun label(u: String): String {
             val p = Irc.prefixOf(u)
             val badge = when {
                 p.startsWith("~") -> "👑 "
@@ -285,11 +285,29 @@ class ChatActivity : Activity(), Irc.Listener {
                 p.startsWith("+") -> "🎤 "
                 else -> ""
             }
-            badge + Irc.bare(u) + if (Irc.isBlocked(u)) "  🚫" else ""
-        }.toTypedArray()
+            val f = Irc.flag(Irc.countryOf(u))
+            return "     " + badge + Irc.bare(u) + (if (f.isNotEmpty()) "  $f" else "") + if (Irc.isBlocked(u)) "  🚫" else ""
+        }
+        // Gruplar: önce yurt dışı, sonra Almanya (.de), sonra adresi belli olmayanlar
+        val groups = listOf(
+            1 to "🌍 Yurt dışından",
+            0 to "🇩🇪 Almanya (.de)",
+            2 to "❔ Belli değil"
+        )
+        val labels = ArrayList<String>()
+        val nicks = ArrayList<String?>()
+        for ((g, title) in groups) {
+            val list = users.filter { Irc.originOf(it) == g }
+            if (list.isEmpty()) continue
+            labels.add("$title • ${list.size} kişi"); nicks.add(null)
+            for (u in list) { labels.add(label(u)); nicks.add(Irc.bare(u)) }
+        }
         AlertDialog.Builder(this)
             .setTitle("${conv.name} • ${users.size} kişi")
-            .setItems(labels) { _, i -> openPrivate(Irc.bare(users[i])) }
+            .setItems(labels.toTypedArray()) { _, i ->
+                val n = nicks[i]
+                if (n != null) openPrivate(n) else showUsers()
+            }
             .setNegativeButton("Kapat", null)
             .show()
     }
