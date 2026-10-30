@@ -232,6 +232,20 @@ class ChatActivity : Activity(), Irc.Listener {
         }
         box.addView(all)
 
+        section("Bölüm 4 • Soru – cevap", "Kişinin mesajında soru kelimesi geçerse senin yazdığın cevap gider. Birden fazla kelime için virgül koy (ör. yaş, kaç yaşında). Uyan soru yoksa havuzdan cevap gider.")
+        val qs = ArrayList<android.widget.EditText>()
+        val ans = ArrayList<android.widget.EditText>()
+        for (i in 0 until Irc.QA_COUNT) {
+            box.addView(text("${i + 1}. soru", 14f, C.ACCENT, true).apply { setPadding(0, dp(12), 0, dp(4)) })
+            val q = input("Soru kelimesi", Irc.qaQuestion(i))
+            box.addView(q); qs.add(q)
+            val an = input("Cevabı", Irc.qaAnswer(i), ml)
+            an.maxLines = 4
+            box.addView(an.apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) }
+            }); ans.add(an)
+        }
+
         box.addView(text("Boş bıraktığın kutular atlanır. Aynı kişiye günde en fazla bir kez başlar; mesajlar en az 5 saniye arayla gider. Engellediğin ya da sunucudan çıkan kişiye gitmez.", 13f, C.DIM).apply {
             setPadding(0, dp(16), 0, 0)
         })
@@ -245,8 +259,9 @@ class ChatActivity : Activity(), Irc.Listener {
                 Irc.setOpeningMsg(clean(first))
                 Irc.setReplyPool(poolText)
                 Irc.setReplyAll(all.isChecked)
+                Irc.setQa(qs.map { clean(it) }, ans.map { clean(it) })
                 Irc.setFollowMsgs(listOf(clean(f1), clean(f2)))
-                val enable = on.isChecked && (clean(first).isNotEmpty() || poolText.isNotEmpty())
+                val enable = on.isChecked && (clean(first).isNotEmpty() || poolText.isNotEmpty() || ans.any { clean(it).isNotEmpty() })
                 Irc.setAutoOn(conv.name, enable)
                 android.widget.Toast.makeText(this,
                     if (enable) "Otomatik mesaj açık" else "Otomatik mesaj kapalı",

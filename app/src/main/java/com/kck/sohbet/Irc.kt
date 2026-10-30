@@ -110,6 +110,38 @@ object Irc {
     fun replyAll(): Boolean = prefs.getBoolean("otoHerkes", false)
     fun setReplyAll(on: Boolean) { prefs.edit().putBoolean("otoHerkes", on).apply() }
 
+    /** Soru-cevap: mesajda soru kelimesi geçerse o cevap gider. */
+    const val QA_COUNT = 10
+
+    fun qaQuestion(i: Int): String = prefs.getString("soru${i + 1}", "") ?: ""
+    fun qaAnswer(i: Int): String = prefs.getString("cevap${i + 1}", "") ?: ""
+
+    fun setQa(questions: List<String>, answers: List<String>) {
+        val e = prefs.edit()
+        for (i in 0 until QA_COUNT) {
+            e.putString("soru${i + 1}", questions.getOrElse(i) { "" }.trim())
+            e.putString("cevap${i + 1}", answers.getOrElse(i) { "" }.trim())
+        }
+        e.apply()
+    }
+
+    /** Türkçe harfleri sadeleştir: "Yaşın kaç" ile "yasin kac" aynı sayılır. */
+    private fun norm(s: String): String = s.lowercase(java.util.Locale("tr"))
+        .replace('ş', 's').replace('ı', 'i').replace('ğ', 'g').replace('ü', 'u').replace('ö', 'o').replace('ç', 'c')
+        .replace("\u0307", "")
+
+    /** Mesaja uyan soru-cevap (sırası, cevabı). Soru kutusunda virgülle birden fazla kelime yazılabilir. */
+    private fun matchQa(text: String, skip: Set<Int>): Pair<Int, String>? {
+        val t = norm(text)
+        for (i in 0 until QA_COUNT) {
+            val ans = qaAnswer(i).trim()
+            if (ans.isEmpty() || i in skip) continue
+            val words = qaQuestion(i).split(',').map { norm(it).trim() }.filter { it.isNotEmpty() }
+            if (words.any { t.contains(it) }) return Pair(i, ans)
+        }
+        return null
+    }
+
     private fun poolList(): List<String> = replyPool().split('\n').map { it.trim() }.filter { it.isNotEmpty() }
 
     /** Cevap gelmezse gönderilecek 2 takip mesajı (30 sn arayla). */
@@ -161,7 +193,7 @@ object Irc {
     /** Açılış mesajı gönderilmiş, cevap yazarsa havuzdan cevap alacak kişiler. */
     private val awaitingReply = HashSet<String>()
     /** Kişiye havuzdan hangi cevaplar gitti (aynı cevap tekrar gitmesin) ve ne zaman başladı. */
-    private class PoolUse(val start: Long) { val used = HashSet<String>() }
+    private class PoolUse(val start: Long) { val used = HashSet<String>(); val qaUsed = HashSet<Int>() }
     private val usedPool = HashMap<String, PoolUse>()
     /** type: 0 = açılış, 1 = takip (cevap gelmedi), 2 = cevap sonrası */
     private class AutoItem(val nick: String, val text: String, val type: Int)
@@ -229,7 +261,7 @@ object Irc {
         queueAuto(nick, list[step], 1)
     }
 
-    private fun onPrivateFrom(nick: String, c: Conv) {
+    private fun onPrivateFrom(nick: String, c: Conv, text: String) {
         val k = key(nick)
         // Cevap geldi: takip mesajlarını iptal et
         noReply.remove(k)
@@ -241,15 +273,21 @@ object Irc {
         val opening = openingMsg().trim()
         if (inFlow && c.msgs.isEmpty() && opening.isNotEmpty())
             c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 $opening", K_SELF))
-        val pool = poolList()
-        if (pool.isEmpty()) return
         // Aynı cevaba birden fazla mesaj gitmesin: sıradaki mesaj gönderilene kadar bekle
         if (autoQueue.any { key(it.nick) == k }) return
         val now = System.currentTimeMillis()
         var use = usedPool[k]
         if (use == null || now - use.start > 24 * 3600 * 1000L) { use = PoolUse(now); usedPool[k] = use }
-        val left = pool.filter { it !in use.used }
-        if (left.isEmpty()) { awaitingReply.remove(k); return }   // Havuz bitti: bu kişiye artık otomatik cevap yok
+        // Önce soru-cevap: sorduğu soruya ayarlanan cevap (her soruya bir kez)
+        val qa = matchQa(text, use.qaUsed)
+        if (qa != null) {
+            use.qaUsed.add(qa.first)
+            queueAuto(nick, qa.second, 2)
+            return
+        }
+        // Uyan soru yoksa havuzdan rastgele
+        val left = poolList().filter { it !in use.used }
+        if (left.isEmpty()) return
         val pick = left.random()
         use.used.add(pick)
         queueAuto(nick, pick, 2)
@@ -651,7 +689,7 @@ object Irc {
                 }
                 if (prefix.contains('!') && isBlocked(from)) return
                 val c = if (isChannelName(target)) conv(target)!! else if (from.contains('.') && !prefix.contains('!')) status() else conv(from)!!
-                if (!isChannelName(target) && !c.isStatus) onPrivateFrom(from, c)
+                if (!isChannelName(target) && !c.isStatus) onPrivateFrom(from, c, strip(text))
                 add(c, from, strip(text), kind)
             }
             "NOTICE" -> {
