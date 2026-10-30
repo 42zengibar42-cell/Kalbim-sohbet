@@ -308,11 +308,18 @@ object Irc {
         return if (tld.length == 2 && tld.all { it in 'a'..'z' }) tld.uppercase() else null
     }
 
-    /** 0 = Almanya (.de), 1 = yurt dışı, 2 = bilinmiyor */
+    private val EUROPE = setOf(
+        "DE", "AT", "CH", "NL", "BE", "LU", "FR", "IT", "ES", "PT", "DK", "SE", "NO", "FI", "IS", "IE",
+        "UK", "GB", "PL", "CZ", "SK", "HU", "SI", "HR", "BA", "RS", "ME", "MK", "AL", "XK", "GR", "BG",
+        "RO", "MD", "UA", "BY", "LT", "LV", "EE", "CY", "MT", "LI", "MC", "SM", "AD", "VA", "EU"
+    )
+
+    /** 0 = Avrupa, 1 = Türkiye, 2 = belli değil, 3 = diğer ülkeler */
     fun originOf(nick: String): Int = when (val c = countryOf(nick)) {
         null -> 2
-        "DE" -> 0
-        else -> 1
+        "TR" -> 1
+        in EUROPE -> 0
+        else -> 3
     }
 
     fun flag(code: String?): String {
@@ -631,7 +638,7 @@ object Irc {
                 } else {
                     if (c.users.none { bare(it).equals(from, true) }) { c.users.add(from); sortUsers(c) }
                     val cc = countryOf(from)
-                    val where = when (cc) { null -> "" ; "DE" -> " ${flag(cc)}" ; else -> " ${flag(cc)} yurt dışı" }
+                    val where = if (cc == null) "" else " ${flag(cc)}"
                     add(c, from, "$from odaya girdi.$where (özel mesaj için dokun)", K_INFO)
                     onOtherJoined(ch, from)
                 }

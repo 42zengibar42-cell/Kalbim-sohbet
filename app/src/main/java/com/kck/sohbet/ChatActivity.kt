@@ -288,10 +288,11 @@ class ChatActivity : Activity(), Irc.Listener {
             val f = Irc.flag(Irc.countryOf(u))
             return "     " + badge + Irc.bare(u) + (if (f.isNotEmpty()) "  $f" else "") + if (Irc.isBlocked(u)) "  🚫" else ""
         }
-        // Gruplar: önce yurt dışı, sonra Almanya (.de), sonra adresi belli olmayanlar
+        // Gruplar: Türkiye, Avrupa (.de .nl .at …), diğer ülkeler, adresi belli olmayanlar
         val groups = listOf(
-            1 to "🌍 Yurt dışından",
-            0 to "🇩🇪 Almanya (.de)",
+            1 to "🇹🇷 Türkiye",
+            0 to "🇪🇺 Avrupa",
+            3 to "🌍 Diğer ülkeler",
             2 to "❔ Belli değil"
         )
         val labels = ArrayList<String>()
