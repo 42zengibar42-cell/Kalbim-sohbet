@@ -200,18 +200,37 @@ class ChatActivity : Activity(), Irc.Listener {
         }
 
         section("Bölüm 1 • Açılış", "Odaya giren kişiye özelden gönderilir.")
-        val first = field("1. mesaj", "ör. Merhaba, hoş geldin 💗", Irc.autoMsg(0))
+        val first = field("1. mesaj", "ör. Merhaba, hoş geldin 💗", Irc.openingMsg())
 
         section("Bölüm 2 • Cevap gelmezse", "Kişi cevap yazmazsa 30 saniye arayla gönderilir. Cevap yazarsa durur.")
         val f1 = field("2. mesaj – 30 sn içinde cevap gelmezse", "ör. Orada mısın?", Irc.followMsg(0))
         val f2 = field("3. mesaj – 30 sn daha cevap gelmezse", "ör. Müsait olunca yaz 🙂", Irc.followMsg(1))
 
-        section("Bölüm 3 • Cevap gelirse", "Kişi her cevap yazdığında sıradaki mesaj gönderilir.")
-        val replies = ArrayList<android.widget.EditText>()
-        val rh = arrayOf("ör. Nasılsın?", "ör. Nerelisin?", "", "")
-        for (i in 1 until Irc.AUTO_COUNT) {
-            replies.add(field("$i. cevaba", rh[i - 1], Irc.autoMsg(i)))
+        section("Bölüm 3 • Cevap havuzu", "Kişi her cevap yazdığında bu listeden rastgele bir cevap seçilip gönderilir. Her satıra bir cevap yaz. Aynı kişiye aynı cevap iki kez gitmez; liste bitince otomatik cevap durur.")
+        box.addView(text("Cevaplar (her satıra bir tane)", 14f, C.TEXT).apply { setPadding(0, dp(10), 0, dp(4)) })
+        val pool = input("ör.\nNasılsın?\nNerelisin?\nKaç yaşındasın?\nNe iş yapıyorsun?", Irc.replyPool(), ml)
+        pool.minLines = 5
+        pool.maxLines = 12
+        pool.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        box.addView(pool)
+        val count = text("", 13f, C.DIM).apply { setPadding(0, dp(4), 0, 0) }
+        fun updateCount() {
+            val n = pool.text.toString().split('\n').count { it.isNotBlank() }
+            count.text = "Havuzda $n cevap var"
         }
+        updateCount()
+        pool.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = updateCount()
+        })
+        box.addView(count)
+        val all = android.widget.CheckBox(this).apply {
+            text = "Bana özelden yazan herkese de havuzdan cevap ver"
+            isChecked = Irc.replyAll()
+            setPadding(0, dp(8), 0, 0)
+        }
+        box.addView(all)
 
         box.addView(text("Boş bıraktığın kutular atlanır. Aynı kişiye günde en fazla bir kez başlar; mesajlar en az 5 saniye arayla gider. Engellediğin ya da sunucudan çıkan kişiye gitmez.", 13f, C.DIM).apply {
             setPadding(0, dp(16), 0, 0)
@@ -222,10 +241,12 @@ class ChatActivity : Activity(), Irc.Listener {
             .setView(scroll)
             .setPositiveButton("Kaydet") { _, _ ->
                 fun clean(e: android.widget.EditText) = e.text.toString().replace("\n", " ").trim()
-                val list = listOf(clean(first)) + replies.map { clean(it) }
-                Irc.setAutoMsgs(list)
+                val poolText = pool.text.toString().split('\n').map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+                Irc.setOpeningMsg(clean(first))
+                Irc.setReplyPool(poolText)
+                Irc.setReplyAll(all.isChecked)
                 Irc.setFollowMsgs(listOf(clean(f1), clean(f2)))
-                val enable = on.isChecked && list.any { it.isNotEmpty() }
+                val enable = on.isChecked && (clean(first).isNotEmpty() || poolText.isNotEmpty())
                 Irc.setAutoOn(conv.name, enable)
                 android.widget.Toast.makeText(this,
                     if (enable) "Otomatik mesaj açık" else "Otomatik mesaj kapalı",
