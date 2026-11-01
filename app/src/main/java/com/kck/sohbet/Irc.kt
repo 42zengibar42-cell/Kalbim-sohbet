@@ -311,6 +311,50 @@ object Irc {
         queueAuto(nick, pick, 2)
     }
 
+    // ---------------- Odadaki normal rumuzlara toplu özel mesaj ----------------
+
+    /** Önünde işaret (~ & @ % +) olmayan, ben/servis/engelli olmayan kişiler */
+    fun plainUsers(ch: String): List<String> {
+        val c = conv(ch, false) ?: return emptyList()
+        return c.users.filter { prefixOf(it).isEmpty() }
+            .filter { !it.equals(myNick, true) && !isService(it) && !isBlocked(it) }
+            .distinctBy { key(it) }
+    }
+
+    private val bulkQueue = ArrayDeque<Pair<String, String>>()
+    private var bulkBusy = false
+    /** Sunucu flood sayıp atmasın diye kişiler arası 1,2 sn */
+    private const val BULK_GAP = 1200L
+    var bulkLeft = 0
+        private set
+
+    /** Kaç kişiye sıraya eklendiğini döndürür. */
+    fun bulkPm(ch: String, text: String): Int {
+        val t = text.trim()
+        if (t.isEmpty() || state != 2) return 0
+        val nicks = plainUsers(ch).filter { n -> bulkQueue.none { key(it.first) == key(n) } }
+        for (n in nicks) bulkQueue.addLast(Pair(n, t))
+        bulkLeft = bulkQueue.size
+        pumpBulk()
+        return nicks.size
+    }
+
+    fun cancelBulk() { bulkQueue.clear(); bulkLeft = 0; changed() }
+
+    private fun pumpBulk() {
+        if (bulkBusy) return
+        val item = bulkQueue.removeFirstOrNull() ?: run { bulkLeft = 0; return }
+        bulkBusy = true
+        if (state == 2 && !isBlocked(item.first)) {
+            send("PRIVMSG ${item.first} :${item.second}")
+            val c = conv(item.first, false)
+            if (c != null) add(c, myNick, item.second, K_SELF)
+        }
+        bulkLeft = bulkQueue.size
+        changed()
+        main.postDelayed({ bulkBusy = false; pumpBulk() }, BULK_GAP)
+    }
+
     // ---------------- Kişinin nereden bağlandığı ----------------
 
     /** rumuz → sunucunun gösterdiği adres (ör. Kalbim-1A2B.dip0.t-ipconnect.de) */

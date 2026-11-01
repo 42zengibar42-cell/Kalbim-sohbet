@@ -100,6 +100,14 @@ class ChatActivity : Activity(), Irc.Listener {
             }
         }
         bottom.addView(edit, LinearLayout.LayoutParams(0, -2, 1f))
+        if (conv.isChannel) {
+            val bulk = text("📨", 20f, Color.WHITE, true).apply {
+                gravity = Gravity.CENTER
+                background = rounded(Color.parseColor("#5A3A50"), 24)
+                setOnClickListener { bulkSend() }
+            }
+            bottom.addView(bulk, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(8) })
+        }
         val send = text("➤", 22f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER
             background = rounded(C.PRIMARY, 24)
@@ -142,7 +150,7 @@ class ChatActivity : Activity(), Irc.Listener {
                 Irc.state == 0 -> "Bağlantı yok"
                 conv.isStatus -> Irc.myNick
                 conv.isChannel && !conv.joined -> "Odada değilsin"
-                conv.isChannel -> (if (Irc.autoOn(conv.name)) "🤖 Oto mesaj açık • " else "") + conv.topic.ifEmpty { "${conv.users.size} kişi" }
+                conv.isChannel -> (if (Irc.bulkLeft > 0) "📨 ${Irc.bulkLeft} kişi kaldı • " else "") + (if (Irc.autoOn(conv.name)) "🤖 Oto mesaj açık • " else "") + conv.topic.ifEmpty { "${conv.users.size} kişi" }
                 else -> "Özel sohbet"
             }
         )
@@ -164,6 +172,36 @@ class ChatActivity : Activity(), Irc.Listener {
         Irc.say(conv.name, t)
         edit.setText("")
         list.post { list.setSelection(adapter.count - 1) }
+    }
+
+    /** Kutudaki yazıyı yöneticiler hariç (rumuzu önünde işaret olmayan) herkese özelden gönder */
+    private fun bulkSend() {
+        if (Irc.state != 2) { edit.error = "Bağlı değilsin"; return }
+        if (Irc.bulkLeft > 0) {
+            AlertDialog.Builder(this)
+                .setMessage("Toplu gönderim sürüyor (${Irc.bulkLeft} kişi kaldı). Durdurulsun mu?")
+                .setPositiveButton("Durdur") { _, _ -> Irc.cancelBulk() }
+                .setNegativeButton("Devam etsin", null)
+                .show()
+            return
+        }
+        val t = edit.text.toString().trim()
+        if (t.isEmpty()) { edit.error = "Önce kutuya mesaj yaz"; return }
+        val n = Irc.plainUsers(conv.name).size
+        if (n == 0) {
+            android.widget.Toast.makeText(this, "Odada mesaj gidecek normal rumuz yok", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("📨 Toplu özel mesaj")
+            .setMessage("Yöneticiler hariç odadaki $n kişiye özelden gönderilsin mi?\n\n\"$t\"")
+            .setPositiveButton("Gönder") { _, _ ->
+                val sent = Irc.bulkPm(conv.name, t)
+                edit.setText("")
+                android.widget.Toast.makeText(this, "$sent kişiye gönderiliyor…", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
     }
 
     private fun confirmClose() {
