@@ -208,23 +208,42 @@ object Irc {
 
     private fun queueAuto(nick: String, text: String, type: Int) {
         if (autoQueue.size >= 30) return
-        autoQueue.addLast(AutoItem(nick, text, type))
+        val item = AutoItem(nick, text, type)
+        if (type == 0) {
+            // Açılış mesajı beklemesin: sıranın en önüne (diğer açılışların arkasına) koy
+            val pos = autoQueue.indexOfFirst { it.type != 0 }.let { if (it < 0) autoQueue.size else it }
+            autoQueue.add(pos, item)
+            // Bekleyen gecikmeli gönderimi iptal et, hemen gönder
+            if (autoBusy) { main.removeCallbacks(pumpTask); autoBusy = false }
+        } else autoQueue.addLast(item)
         pumpAuto()
     }
 
-    /** Sunucuya yüklenmemek için otomatik mesajları en az 5 saniye arayla gönder. */
+    private var lastOpenAt = 0L
+    /** Aynı anda çok kişi girerse sunucu flood saymasın diye açılışlar arası en az 1 sn */
+    private const val OPEN_GAP = 1000L
+
+    private val pumpTask = Runnable { sendNextAuto() }
+
+    /** Açılış mesajı hemen gider; diğer otomatik mesajlar sunucuya yüklenmemek için en az 5 sn arayla. */
     private fun pumpAuto() {
         if (autoBusy || autoQueue.isEmpty()) return
         autoBusy = true
-        val wait = maxOf(1500L, lastAutoAt + AUTO_GAP - System.currentTimeMillis())
-        main.postDelayed({
-            autoBusy = false
-            val item = autoQueue.removeFirstOrNull() ?: return@postDelayed
+        val now = System.currentTimeMillis()
+        val wait = if (autoQueue.first().type == 0) maxOf(0L, lastOpenAt + OPEN_GAP - now)
+                   else maxOf(1500L, lastAutoAt + AUTO_GAP - now)
+        if (wait == 0L) main.post(pumpTask) else main.postDelayed(pumpTask, wait)
+    }
+
+    private fun sendNextAuto() {
+        autoBusy = false
+        val item = autoQueue.removeFirstOrNull() ?: return
             val k = key(item.nick)
             val stillWaiting = item.type != 1 || noReply.containsKey(k)
             if (state == 2 && stillWaiting && !isBlocked(item.nick)) {
                 send("PRIVMSG ${item.nick} :${item.text}")
                 lastAutoAt = System.currentTimeMillis()
+                if (item.type == 0) lastOpenAt = lastAutoAt
                 val c = conv(item.nick, false)
                 if (c != null) add(c, myNick, "🤖 " + item.text, K_SELF)
                 // Açılış ya da takip mesajından sonra 30 sn içinde cevap gelmezse sıradaki takip mesajı
@@ -234,7 +253,6 @@ object Irc {
                 }
             }
             pumpAuto()
-        }, wait)
     }
 
     private fun onOtherJoined(ch: String, nick: String) {
@@ -441,7 +459,7 @@ object Irc {
                 if (gen != generation) { c.close(); return@Thread }
                 conn = c
                 sendNow("NICK $nick")
-                sendNow("USER ${safeIdent(nick)} 0 * :Kalbim Sohbet")
+                sendNow("USER ${safeIdent(nick)} 0 * :Germany")
                 // Bu port gerçekten sohbet sunucusu mu? Cevap gelmesini bekle (en fazla 12 sn)
                 val until = System.currentTimeMillis() + 12000
                 while (!a.gotData.get() && !a.closed.get() && System.currentTimeMillis() < until && gen == generation) {
