@@ -38,7 +38,7 @@ class IrcService : Service() {
         )
         val n: Notification = NotificationCompat.Builder(this, "baglanti")
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("Kalbim Sohbet")
+            .setContentTitle("Germany")
             .setContentText("Sohbete bağlısın")
             .setContentIntent(open)
             .setOngoing(true)

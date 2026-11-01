@@ -76,7 +76,7 @@ class MainActivity : Activity(), Irc.Listener {
         showingLogin = true
         bar = null; list = null
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.BG) }
-        root.addView(TopBar(this, "Kalbim Sohbet", null))
+        root.addView(TopBar(this, "Germany", null))
 
         val scroll = ScrollView(this)
         val box = LinearLayout(this).apply {
@@ -200,7 +200,7 @@ class MainActivity : Activity(), Irc.Listener {
     private fun showHome() {
         showingLogin = false
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.BG) }
-        val b = TopBar(this, "Kalbim Sohbet", null)
+        val b = TopBar(this, "Germany", null)
         b.action(smallButton("⏻") { confirmDisconnect() })
         bar = b
         root.addView(b)
