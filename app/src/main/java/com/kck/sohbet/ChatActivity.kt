@@ -220,7 +220,7 @@ class ChatActivity : Activity(), Irc.Listener {
             setPadding(dp(20), dp(8), dp(20), dp(4))
         }
         val on = android.widget.CheckBox(this).apply {
-            text = "Bu odaya girenlere otomatik özel mesaj gönder"
+            text = "Seçtiğim kişilere otomatik özel mesaj gönder"
             isChecked = Irc.autoOn(conv.name)
         }
         box.addView(on)
@@ -229,62 +229,47 @@ class ChatActivity : Activity(), Irc.Listener {
             box.addView(text(title, 16f, C.ACCENT, true).apply { setPadding(0, dp(18), 0, 0) })
             box.addView(text(desc, 13f, C.DIM).apply { setPadding(0, dp(2), 0, 0) })
         }
-        fun field(label: String, hint: String, value: String): android.widget.EditText {
-            box.addView(text(label, 14f, C.TEXT).apply { setPadding(0, dp(10), 0, dp(4)) })
-            val e = input(hint, value, ml)
-            e.maxLines = 4
-            box.addView(e)
-            return e
+
+        // Bölüm 1: kişiler
+        section("Bölüm 1 • Kişiler", "Mesajlar sadece burada seçtiğin kişilere gider.")
+        val picked = LinkedHashSet<String>(Irc.autoPeople())
+        val pickedText = text("", 14f, C.TEXT).apply { setPadding(0, dp(8), 0, dp(4)) }
+        fun updatePicked() {
+            pickedText.text = if (picked.isEmpty()) "Henüz kimse seçilmedi"
+                else "Seçilen (${picked.size}): " + picked.sortedBy { it.lowercase() }.joinToString(", ")
         }
-
-        section("Bölüm 1 • Açılış", "Odaya giren kişiye özelden gönderilir.")
-        val first = field("1. mesaj", "ör. Merhaba, hoş geldin 💗", Irc.openingMsg())
-
-        section("Bölüm 2 • Cevap gelmezse", "Kişi cevap yazmazsa 30 saniye arayla gönderilir. Cevap yazarsa durur.")
-        val f1 = field("2. mesaj – 30 sn içinde cevap gelmezse", "ör. Orada mısın?", Irc.followMsg(0))
-        val f2 = field("3. mesaj – 30 sn daha cevap gelmezse", "ör. Müsait olunca yaz 🙂", Irc.followMsg(1))
-
-        section("Bölüm 3 • Cevap havuzu", "Kişi her cevap yazdığında bu listeden rastgele bir cevap seçilip gönderilir. Her satıra bir cevap yaz. Aynı kişiye aynı cevap iki kez gitmez; liste bitince otomatik cevap durur.")
-        box.addView(text("Cevaplar (her satıra bir tane)", 14f, C.TEXT).apply { setPadding(0, dp(10), 0, dp(4)) })
-        val pool = input("ör.\nNasılsın?\nNerelisin?\nKaç yaşındasın?\nNe iş yapıyorsun?", Irc.replyPool(), ml)
-        pool.minLines = 5
-        pool.maxLines = 12
-        pool.gravity = android.view.Gravity.TOP or android.view.Gravity.START
-        box.addView(pool)
-        val count = text("", 13f, C.DIM).apply { setPadding(0, dp(4), 0, 0) }
-        fun updateCount() {
-            val n = pool.text.toString().split('\n').count { it.isNotBlank() }
-            count.text = "Havuzda $n cevap var"
-        }
-        updateCount()
-        pool.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) = updateCount()
+        updatePicked()
+        box.addView(pickedText)
+        box.addView(button("👥 Kişi seç") {
+            val names = Irc.autoCandidates(conv.name)
+            if (names.isEmpty()) {
+                android.widget.Toast.makeText(this, "Odada seçilecek kimse yok", android.widget.Toast.LENGTH_SHORT).show()
+                return@button
+            }
+            val checked = BooleanArray(names.size) { i -> picked.any { it.equals(names[i], true) } }
+            AlertDialog.Builder(this)
+                .setTitle("Kime gitsin?")
+                .setMultiChoiceItems(names.toTypedArray(), checked) { _, i, v -> checked[i] = v }
+                .setPositiveButton("Tamam") { _, _ ->
+                    picked.clear()
+                    names.forEachIndexed { i, n -> if (checked[i]) picked.add(n) }
+                    updatePicked()
+                }
+                .setNegativeButton("Vazgeç", null)
+                .show()
         })
-        box.addView(count)
-        val all = android.widget.CheckBox(this).apply {
-            text = "Bana özelden yazan herkese de havuzdan cevap ver"
-            isChecked = Irc.replyAll()
-            setPadding(0, dp(8), 0, 0)
-        }
-        box.addView(all)
 
-        section("Bölüm 4 • Soru – cevap", "Kişinin mesajında soru kelimesi geçerse senin yazdığın cevap gider. Birden fazla kelime için virgül koy (ör. yaş, kaç yaşında). Uyan soru yoksa havuzdan cevap gider.")
-        val qs = ArrayList<android.widget.EditText>()
-        val ans = ArrayList<android.widget.EditText>()
-        for (i in 0 until Irc.QA_COUNT) {
-            box.addView(text("${i + 1}. soru", 14f, C.ACCENT, true).apply { setPadding(0, dp(12), 0, dp(4)) })
-            val q = input("Soru kelimesi", Irc.qaQuestion(i))
-            box.addView(q); qs.add(q)
-            val an = input("Cevabı", Irc.qaAnswer(i), ml)
-            an.maxLines = 4
-            box.addView(an.apply {
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) }
-            }); ans.add(an)
+        // Bölüm 2: 5 mesaj
+        section("Bölüm 2 • Mesajlar", "Seçilen kişiye 1. mesaj hemen, diğerleri sırayla (en az 5 saniye arayla) gider. Boş bıraktığın kutu atlanır.")
+        val msgs = ArrayList<android.widget.EditText>()
+        for (i in 0 until Irc.AUTO_COUNT) {
+            box.addView(text("${i + 1}. mesaj", 14f, C.TEXT).apply { setPadding(0, dp(10), 0, dp(4)) })
+            val m = input(if (i == 0) "ör. Merhaba, hoş geldin 💗" else "", Irc.autoMsg(i), ml)
+            m.maxLines = 4
+            box.addView(m); msgs.add(m)
         }
 
-        box.addView(text("Boş bıraktığın kutular atlanır. Aynı kişiye günde en fazla bir kez başlar; mesajlar en az 5 saniye arayla gider. Engellediğin ya da sunucudan çıkan kişiye gitmez.", 13f, C.DIM).apply {
+        box.addView(text("Kaydet'e basınca yeni seçtiğin kişilere mesajlar hemen gider. Seçilen biri odaya tekrar girerse ona da gider (aynı kişiye günde en fazla bir kez). Engellediğin ya da sunucudan çıkan kişiye gitmez.", 13f, C.DIM).apply {
             setPadding(0, dp(16), 0, 0)
         })
         val scroll = android.widget.ScrollView(this).apply { addView(box) }
@@ -293,16 +278,12 @@ class ChatActivity : Activity(), Irc.Listener {
             .setView(scroll)
             .setPositiveButton("Kaydet") { _, _ ->
                 fun clean(e: android.widget.EditText) = e.text.toString().replace("\n", " ").trim()
-                val poolText = pool.text.toString().split('\n').map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
-                Irc.setOpeningMsg(clean(first))
-                Irc.setReplyPool(poolText)
-                Irc.setReplyAll(all.isChecked)
-                Irc.setQa(qs.map { clean(it) }, ans.map { clean(it) })
-                Irc.setFollowMsgs(listOf(clean(f1), clean(f2)))
-                val enable = on.isChecked && (clean(first).isNotEmpty() || poolText.isNotEmpty() || ans.any { clean(it).isNotEmpty() })
+                Irc.setAutoMsgs(msgs.map { clean(it) })
+                val enable = on.isChecked && picked.isNotEmpty() && msgs.any { clean(it).isNotEmpty() }
                 Irc.setAutoOn(conv.name, enable)
+                Irc.setAutoPeople(picked, enable)
                 android.widget.Toast.makeText(this,
-                    if (enable) "Otomatik mesaj açık" else "Otomatik mesaj kapalı",
+                    if (enable) "Otomatik mesaj açık • ${picked.size} kişi" else "Otomatik mesaj kapalı",
                     android.widget.Toast.LENGTH_SHORT).show()
                 refresh()
             }

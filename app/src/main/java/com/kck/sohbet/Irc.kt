@@ -78,85 +78,42 @@ object Irc {
 
     private val prefs get() = appCtx.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
 
-    /** Odaya girene gönderilen açılış mesajı. */
-    fun openingMsg(): String {
+    /** Seçilen kişilere sırayla gönderilen 5 mesaj. */
+    const val AUTO_COUNT = 5
+
+    fun autoMsg(i: Int): String {
         val p = prefs
-        if (!p.contains("otoMesaj1") && p.contains("otoMesaj")) return p.getString("otoMesaj", "") ?: ""
-        return p.getString("otoMesaj1", "") ?: ""
+        // Eski sürümde tek açılış mesajı "otoMesaj" olarak saklanıyordu
+        if (i == 0 && !p.contains("otoMesaj1") && p.contains("otoMesaj")) return p.getString("otoMesaj", "") ?: ""
+        return p.getString("otoMesaj${i + 1}", "") ?: ""
     }
 
-    fun setOpeningMsg(text: String) {
-        prefs.edit().putString("otoMesaj1", text.trim()).remove("otoMesaj").apply()
-    }
-
-    /** Cevap havuzu: her satır bir cevap. Kişi yazınca buradan rastgele biri seçilir. */
-    fun replyPool(): String {
-        val p = prefs
-        if (p.contains("otoHavuz")) return p.getString("otoHavuz", "") ?: ""
-        // Eski sürümdeki 2-5. mesajları havuza taşı
-        val old = ArrayList<String>()
-        if (!p.contains("otoMesaj2") && p.contains("otoCevap")) old.add(p.getString("otoCevap", "") ?: "")
-        for (i in 2..5) old.add(p.getString("otoMesaj$i", "") ?: "")
-        return old.map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
-    }
-
-    fun setReplyPool(text: String) {
-        val e = prefs.edit().putString("otoHavuz", text.trim())
-        for (i in 2..5) e.remove("otoMesaj$i")
-        e.remove("otoCevap").apply()
-    }
-
-    /** Açıksa: bana özelden yazan herkese havuzdan cevap ver (oda mesajını almamış olsa bile). */
-    fun replyAll(): Boolean = prefs.getBoolean("otoHerkes", false)
-    fun setReplyAll(on: Boolean) { prefs.edit().putBoolean("otoHerkes", on).apply() }
-
-    /** Soru-cevap: mesajda soru kelimesi geçerse o cevap gider. */
-    const val QA_COUNT = 10
-
-    fun qaQuestion(i: Int): String = prefs.getString("soru${i + 1}", "") ?: ""
-    fun qaAnswer(i: Int): String = prefs.getString("cevap${i + 1}", "") ?: ""
-
-    fun setQa(questions: List<String>, answers: List<String>) {
-        val e = prefs.edit()
-        for (i in 0 until QA_COUNT) {
-            e.putString("soru${i + 1}", questions.getOrElse(i) { "" }.trim())
-            e.putString("cevap${i + 1}", answers.getOrElse(i) { "" }.trim())
-        }
+    fun setAutoMsgs(list: List<String>) {
+        val e = prefs.edit().remove("otoMesaj")
+        for (i in 0 until AUTO_COUNT) e.putString("otoMesaj${i + 1}", list.getOrElse(i) { "" }.trim())
+        // Kaldırılan eski ayarlar (cevap havuzu, soru-cevap, takip mesajları)
+        e.remove("otoHavuz").remove("otoCevap").remove("otoHerkes")
+        for (i in 1..10) e.remove("soru$i").remove("cevap$i")
+        e.remove("otoTakip1").remove("otoTakip2")
         e.apply()
     }
 
-    /** Türkçe harfleri sadeleştir: "Yaşın kaç" ile "yasin kac" aynı sayılır. */
-    private fun norm(s: String): String = s.lowercase(java.util.Locale("tr"))
-        .replace('ş', 's').replace('ı', 'i').replace('ğ', 'g').replace('ü', 'u').replace('ö', 'o').replace('ç', 'c')
-        .replace("\u0307", "")
+    private fun autoMsgList(): List<String> = (0 until AUTO_COUNT).map { autoMsg(it).trim() }.filter { it.isNotEmpty() }
 
-    /** Mesaja uyan soru-cevap (sırası, cevabı). Soru kutusunda virgülle birden fazla kelime yazılabilir. */
-    private fun matchQa(text: String, skip: Set<Int>): Pair<Int, String>? {
-        val t = norm(text)
-        for (i in 0 until QA_COUNT) {
-            val ans = qaAnswer(i).trim()
-            if (ans.isEmpty() || i in skip) continue
-            val words = qaQuestion(i).split(',').map { norm(it).trim() }.filter { it.isNotEmpty() }
-            if (words.any { t.contains(it) }) return Pair(i, ans)
-        }
-        return null
+    /** Otomatik mesaj gidecek kişiler (rumuzlar). */
+    fun autoPeople(): Set<String> = prefs.getStringSet("otoKisiler", emptySet())!!
+
+    fun isAutoPerson(nick: String): Boolean = autoPeople().any { key(it) == key(bare(nick)) }
+
+    /** Seçimi kaydet. sendNow açıksa yeni seçilen kişilere mesajlar hemen sıraya girer. */
+    fun setAutoPeople(nicks: Collection<String>, sendNow: Boolean) {
+        val old = autoPeople().map { key(it) }.toSet()
+        val fresh = nicks.map { bare(it) }.distinctBy { key(it) }
+        val keep = fresh.map { key(it) }.toSet()
+        prefs.edit().putStringSet("otoKisiler", fresh.toSet()).apply()
+        autoQueue.removeAll { key(it.nick) !in keep }
+        if (sendNow) for (n in fresh) if (key(n) !in old && !isBlocked(n)) startAuto(n)
     }
-
-    private fun poolList(): List<String> = replyPool().split('\n').map { it.trim() }.filter { it.isNotEmpty() }
-
-    /** Cevap gelmezse gönderilecek 2 takip mesajı (30 sn arayla). */
-    const val FOLLOW_COUNT = 2
-    const val FOLLOW_DELAY = 30_000L
-
-    fun followMsg(i: Int): String = prefs.getString("otoTakip${i + 1}", "") ?: ""
-
-    fun setFollowMsgs(list: List<String>) {
-        val e = prefs.edit()
-        for (i in 0 until FOLLOW_COUNT) e.putString("otoTakip${i + 1}", list.getOrElse(i) { "" }.trim())
-        e.apply()
-    }
-
-    private fun followList(): List<String> = (0 until FOLLOW_COUNT).map { followMsg(it).trim() }.filter { it.isNotEmpty() }
 
 
     // ---------------- Engelleme ----------------
@@ -170,10 +127,7 @@ object Irc {
         if (on) set.add(key(bare(nick))) else set.remove(key(bare(nick)))
         prefs.edit().putStringSet("engelliler", set).apply()
         if (on) {
-            awaitingReply.remove(key(bare(nick)))
-            usedPool.remove(key(bare(nick)))
             autoQueue.removeAll { key(it.nick) == key(bare(nick)) }
-            noReply.remove(key(bare(nick)))
             if (state == 2) send("SILENCE +${bare(nick)}!*@*")
         } else if (state == 2) send("SILENCE -${bare(nick)}!*@*")
         changed()
@@ -188,29 +142,22 @@ object Irc {
         prefs.edit().putStringSet("otoOdalar", set).apply()
     }
 
-    /** Kime ne zaman otomatik mesaj gitti (aynı kişiye günde bir kez). */
+    /** Kime ne zaman otomatik mesaj gitti (odaya tekrar girerse günde en fazla bir kez). */
     private val autoSent = HashMap<String, Long>()
-    /** Açılış mesajı gönderilmiş, cevap yazarsa havuzdan cevap alacak kişiler. */
-    private val awaitingReply = HashSet<String>()
-    /** Kişiye havuzdan hangi cevaplar gitti (aynı cevap tekrar gitmesin) ve ne zaman başladı. */
-    private class PoolUse(val start: Long) { val used = HashSet<String>(); val qaUsed = HashSet<Int>() }
-    private val usedPool = HashMap<String, PoolUse>()
-    /** type: 0 = açılış, 1 = takip (cevap gelmedi), 2 = cevap sonrası */
+    /** type: 0 = ilk mesaj (hemen gider), 1 = sonraki mesajlar (arayla gider) */
     private class AutoItem(val nick: String, val text: String, val type: Int)
     private val autoQueue = ArrayDeque<AutoItem>()
-    /** Henüz cevap vermeyen kişiler → gönderilecek sonraki takip mesajının sırası */
-    private val noReply = HashMap<String, Int>()
     private var autoBusy = false
     private var lastAutoAt = 0L
     private const val AUTO_GAP = 5000L
+    private const val AUTO_QUEUE_MAX = 60
 
     private fun isService(n: String) = n.endsWith("Serv", true) || n.contains('.')
 
     private fun queueAuto(nick: String, text: String, type: Int) {
-        if (autoQueue.size >= 30) return
         val item = AutoItem(nick, text, type)
         if (type == 0) {
-            // Açılış mesajı beklemesin: sıranın en önüne (diğer açılışların arkasına) koy
+            // İlk mesaj beklemesin: sıranın en önüne (diğer ilk mesajların arkasına) koy
             val pos = autoQueue.indexOfFirst { it.type != 0 }.let { if (it < 0) autoQueue.size else it }
             autoQueue.add(pos, item)
             // Bekleyen gecikmeli gönderimi iptal et, hemen gönder
@@ -220,12 +167,12 @@ object Irc {
     }
 
     private var lastOpenAt = 0L
-    /** Aynı anda çok kişi girerse sunucu flood saymasın diye açılışlar arası en az 1 sn */
+    /** Aynı anda birkaç kişiye gidince sunucu flood saymasın diye ilk mesajlar arası en az 1 sn */
     private const val OPEN_GAP = 1000L
 
     private val pumpTask = Runnable { sendNextAuto() }
 
-    /** Açılış mesajı hemen gider; diğer otomatik mesajlar sunucuya yüklenmemek için en az 5 sn arayla. */
+    /** İlk mesaj hemen gider; diğer otomatik mesajlar sunucuya yüklenmemek için en az 5 sn arayla. */
     private fun pumpAuto() {
         if (autoBusy || autoQueue.isEmpty()) return
         autoBusy = true
@@ -238,78 +185,41 @@ object Irc {
     private fun sendNextAuto() {
         autoBusy = false
         val item = autoQueue.removeFirstOrNull() ?: return
-            val k = key(item.nick)
-            val stillWaiting = item.type != 1 || noReply.containsKey(k)
-            if (state == 2 && stillWaiting && !isBlocked(item.nick)) {
-                send("PRIVMSG ${item.nick} :${item.text}")
-                lastAutoAt = System.currentTimeMillis()
-                if (item.type == 0) lastOpenAt = lastAutoAt
-                val c = conv(item.nick, false)
-                if (c != null) add(c, myNick, "🤖 " + item.text, K_SELF)
-                // Açılış ya da takip mesajından sonra 30 sn içinde cevap gelmezse sıradaki takip mesajı
-                if (item.type != 2 && noReply.containsKey(k)) {
-                    val nick = item.nick
-                    main.postDelayed({ followUp(nick) }, FOLLOW_DELAY)
-                }
-            }
-            pumpAuto()
-    }
-
-    private fun onOtherJoined(ch: String, nick: String) {
-        val text = openingMsg().trim().ifEmpty { return }
-        if (!autoOn(ch) || state != 2) return
-        if (nick.equals(myNick, true) || isService(nick) || isBlocked(nick)) return
-        val k = key(nick)
-        val last = autoSent[k] ?: 0L
-        if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
-        autoSent[k] = System.currentTimeMillis()
-        awaitingReply.add(k)
-        usedPool[k] = PoolUse(System.currentTimeMillis())
-        if (followList().isNotEmpty()) noReply[k] = 0
-        queueAuto(nick, text, 0)
-    }
-
-    /** Otomatik mesaj attığımız kişi cevap yazdıysa. */
-    private fun followUp(nick: String) {
-        val k = key(nick)
-        val step = noReply[k] ?: return
-        val list = followList()
-        if (state != 2 || step >= list.size || isBlocked(nick)) { noReply.remove(k); return }
-        noReply[k] = step + 1
-        queueAuto(nick, list[step], 1)
-    }
-
-    private fun onPrivateFrom(nick: String, c: Conv, text: String) {
-        val k = key(nick)
-        // Cevap geldi: takip mesajlarını iptal et
-        noReply.remove(k)
-        autoQueue.removeAll { key(it.nick) == k && it.type == 1 }
-        if (state != 2 || isService(nick) || isBlocked(nick) || nick.equals(myNick, true)) return
-        val inFlow = k in awaitingReply
-        if (!inFlow && !replyAll()) return
-        // Açılış mesajı oda ekranından gittiği için özel sohbette görünsün
-        val opening = openingMsg().trim()
-        if (inFlow && c.msgs.isEmpty() && opening.isNotEmpty())
-            c.msgs.add(Msg(System.currentTimeMillis(), myNick, "🤖 $opening", K_SELF))
-        // Aynı cevaba birden fazla mesaj gitmesin: sıradaki mesaj gönderilene kadar bekle
-        if (autoQueue.any { key(it.nick) == k }) return
-        val now = System.currentTimeMillis()
-        var use = usedPool[k]
-        if (use == null || now - use.start > 24 * 3600 * 1000L) { use = PoolUse(now); usedPool[k] = use }
-        // Önce soru-cevap: sorduğu soruya ayarlanan cevap (her soruya bir kez)
-        val qa = matchQa(text, use.qaUsed)
-        if (qa != null) {
-            use.qaUsed.add(qa.first)
-            queueAuto(nick, qa.second, 2)
-            return
+        if (state == 2 && isAutoPerson(item.nick) && !isBlocked(item.nick)) {
+            send("PRIVMSG ${item.nick} :${item.text}")
+            lastAutoAt = System.currentTimeMillis()
+            if (item.type == 0) lastOpenAt = lastAutoAt
+            add(conv(item.nick)!!, myNick, "🤖 " + item.text, K_SELF)
         }
-        // Uyan soru yoksa havuzdan rastgele
-        val left = poolList().filter { it !in use.used }
-        if (left.isEmpty()) return
-        val pick = left.random()
-        use.used.add(pick)
-        queueAuto(nick, pick, 2)
+        pumpAuto()
     }
+
+    /** Seçilen kişiye 5 mesajı sırayla gönder (boş kutular atlanır). */
+    private fun startAuto(nick: String) {
+        val list = autoMsgList()
+        if (list.isEmpty() || state != 2) return
+        if (autoQueue.size + list.size > AUTO_QUEUE_MAX) return
+        autoSent[key(bare(nick))] = System.currentTimeMillis()
+        list.forEachIndexed { i, t -> queueAuto(bare(nick), t, if (i == 0) 0 else 1) }
+    }
+
+    /** Seçilmiş biri odaya (tekrar) girerse mesajlar ona da gider; aynı kişiye günde en fazla bir kez. */
+    private fun onOtherJoined(ch: String, nick: String) {
+        if (!autoOn(ch) || state != 2) return
+        if (nick.equals(myNick, true) || isService(nick) || isBlocked(nick) || !isAutoPerson(nick)) return
+        val last = autoSent[key(nick)] ?: 0L
+        if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
+        startAuto(nick)
+    }
+
+    /** Seçme listesi: odadaki herkes (ben, servisler ve engelliler hariç) + daha önce seçilmiş olanlar. */
+    fun autoCandidates(ch: String): List<String> {
+        val inRoom = (conv(ch, false)?.users ?: emptyList<String>())
+            .map { bare(it) }
+            .filter { !it.equals(myNick, true) && !isService(it) && !isBlocked(it) }
+        return (inRoom + autoPeople()).distinctBy { key(it) }.sortedBy { key(it) }
+    }
+
 
     // ---------------- Odadaki normal rumuzlara toplu özel mesaj ----------------
 
@@ -725,7 +635,7 @@ object Irc {
                 } else add(c, null, "$who, $from tarafından atıldı.", K_INFO)
             }
             "QUIT" -> {
-                noReply.remove(key(from)); awaitingReply.remove(key(from)); usedPool.remove(key(from)); hosts.remove(key(from))
+                hosts.remove(key(from))
                 autoQueue.removeAll { key(it.nick) == key(from) }
                 for (c in convs.values) {
                     if (c.isChannel && c.users.removeAll { bare(it).equals(from, true) })
@@ -791,7 +701,6 @@ object Irc {
                 }
                 if (prefix.contains('!') && isBlocked(from)) return
                 val c = if (isChannelName(target)) conv(target)!! else if (from.contains('.') && !prefix.contains('!')) status() else conv(from)!!
-                if (!isChannelName(target) && !c.isStatus) onPrivateFrom(from, c, strip(text))
                 add(c, from, strip(text), kind)
             }
             "NOTICE" -> {
