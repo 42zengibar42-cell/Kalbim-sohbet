@@ -225,6 +225,11 @@ class ChatActivity : Activity(), Irc.Listener {
             isChecked = Irc.autoOn(conv.name)
         }
         box.addView(on)
+        val all = android.widget.CheckBox(this).apply {
+            text = "Odaya yeni giren HERKESE de gönder (ayrı seçenek)"
+            isChecked = Irc.autoAll(conv.name)
+        }
+        box.addView(all)
         val ml = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         fun section(title: String, desc: String) {
             box.addView(text(title, 16f, C.ACCENT, true).apply { setPadding(0, dp(18), 0, 0) })
@@ -294,11 +299,12 @@ class ChatActivity : Activity(), Irc.Listener {
             .setPositiveButton("Kaydet") { _, _ ->
                 fun clean(e: android.widget.EditText) = e.text.toString().replace("\n", " ").trim()
                 Irc.setAutoMsgs(msgs.map { clean(it) })
-                val enable = on.isChecked && picked.isNotEmpty() && msgs.any { clean(it).isNotEmpty() }
+                val enable = on.isChecked && (picked.isNotEmpty() || all.isChecked) && msgs.any { clean(it).isNotEmpty() }
                 Irc.setAutoOn(conv.name, enable)
+                Irc.setAutoAll(conv.name, enable && all.isChecked)
                 Irc.setAutoPeople(picked, enable)
                 android.widget.Toast.makeText(this,
-                    if (enable) "Otomatik mesaj açık • ${picked.size} kişi" else "Otomatik mesaj kapalı",
+                    if (enable) "Otomatik mesaj açık • ${picked.size} kişi" + if (all.isChecked) " + yeni girenler" else "" else "Otomatik mesaj kapalı",
                     android.widget.Toast.LENGTH_SHORT).show()
                 refresh()
             }

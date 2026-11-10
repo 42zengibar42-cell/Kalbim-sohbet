@@ -92,7 +92,7 @@ object Irc {
         val e = prefs.edit().remove("otoMesaj")
         for (i in 0 until AUTO_COUNT) e.putString("otoMesaj${i + 1}", list.getOrElse(i) { "" }.trim())
         // Kaldırılan eski ayarlar (cevap havuzu, soru-cevap, takip mesajları)
-        e.remove("otoHavuz").remove("otoCevap").remove("otoHerkes")
+        e.remove("otoHavuz").remove("otoCevap")
         for (i in 1..10) e.remove("soru$i").remove("cevap$i")
         e.remove("otoTakip1").remove("otoTakip2")
         e.apply()
@@ -111,7 +111,7 @@ object Irc {
         val fresh = nicks.map { bare(it) }.distinctBy { key(it) }
         val keep = fresh.map { key(it) }.toSet()
         prefs.edit().putStringSet("otoKisiler", fresh.toSet()).apply()
-        autoQueue.removeAll { key(it.nick) !in keep }
+        autoQueue.removeAll { !it.all && key(it.nick) !in keep }
         if (sendNow) for (n in fresh) if (key(n) !in old && !isBlocked(n)) startAuto(n)
     }
 
@@ -136,6 +136,16 @@ object Irc {
     fun autoOn(ch: String): Boolean =
         prefs.getStringSet("otoOdalar", emptySet())!!.contains(key(ch))
 
+    /** Odaya yeni giren HERKESE de gönder (seçilen kişilerden bağımsız ayrı seçenek). */
+    fun autoAll(ch: String): Boolean =
+        prefs.getStringSet("otoGirenler", emptySet())!!.contains(key(ch))
+
+    fun setAutoAll(ch: String, on: Boolean) {
+        val set = HashSet(prefs.getStringSet("otoGirenler", emptySet())!!)
+        if (on) set.add(key(ch)) else set.remove(key(ch))
+        prefs.edit().putStringSet("otoGirenler", set).apply()
+    }
+
     fun setAutoOn(ch: String, on: Boolean) {
         val set = HashSet(prefs.getStringSet("otoOdalar", emptySet())!!)
         if (on) set.add(key(ch)) else set.remove(key(ch))
@@ -145,7 +155,7 @@ object Irc {
     /** Kime ne zaman otomatik mesaj gitti (odaya tekrar girerse günde en fazla bir kez). */
     private val autoSent = HashMap<String, Long>()
     /** due: mesajın gideceği zaman. 1. mesaj hemen, sonrakiler her biri bir öncekinden 30 sn sonra. */
-    private class AutoItem(val nick: String, val text: String, val due: Long)
+    private class AutoItem(val nick: String, val text: String, val due: Long, val all: Boolean = false)
     private val autoQueue = ArrayList<AutoItem>()
     private var autoScheduled = false
     private var lastAutoAt = 0L
@@ -173,7 +183,7 @@ object Irc {
         autoScheduled = false
         val item = autoQueue.minByOrNull { it.due } ?: return
         autoQueue.remove(item)
-        if (state == 2 && isAutoPerson(item.nick) && !isBlocked(item.nick)) {
+        if (state == 2 && (item.all || isAutoPerson(item.nick)) && !isBlocked(item.nick)) {
             send("PRIVMSG ${item.nick} :${item.text}")
             lastAutoAt = System.currentTimeMillis()
             add(conv(item.nick)!!, myNick, "🤖 " + item.text, K_SELF)
@@ -182,13 +192,13 @@ object Irc {
     }
 
     /** Seçilen kişiye 6 mesajı gönder: 1. hemen, diğerleri 30'ar sn arayla (boş kutular atlanır). */
-    private fun startAuto(nick: String) {
+    private fun startAuto(nick: String, all: Boolean = false) {
         val list = autoMsgList()
         if (list.isEmpty() || state != 2) return
         if (autoQueue.size + list.size > AUTO_QUEUE_MAX) return
         val now = System.currentTimeMillis()
         autoSent[key(bare(nick))] = now
-        list.forEachIndexed { i, t -> autoQueue.add(AutoItem(bare(nick), t, now + i * AUTO_STEP)) }
+        list.forEachIndexed { i, t -> autoQueue.add(AutoItem(bare(nick), t, now + i * AUTO_STEP, all)) }
         // Bekleyen daha geç bir zamanlama varsa yeni (daha erken) mesaj için yeniden zamanla
         if (autoScheduled) { main.removeCallbacks(pumpTask); autoScheduled = false }
         pumpAuto()
@@ -197,10 +207,11 @@ object Irc {
     /** Seçilmiş biri odaya (tekrar) girerse mesajlar ona da gider; aynı kişiye günde en fazla bir kez. */
     private fun onOtherJoined(ch: String, nick: String) {
         if (!autoOn(ch) || state != 2) return
-        if (nick.equals(myNick, true) || isService(nick) || isBlocked(nick) || !isAutoPerson(nick)) return
+        val everyone = autoAll(ch)
+        if (nick.equals(myNick, true) || isService(nick) || isBlocked(nick) || (!everyone && !isAutoPerson(nick))) return
         val last = autoSent[key(nick)] ?: 0L
         if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return
-        startAuto(nick)
+        startAuto(nick, everyone && !isAutoPerson(nick))
     }
 
     /** Seçme listesi: odadaki herkes (ben, servisler ve engelliler hariç) + daha önce seçilmiş olanlar. */
