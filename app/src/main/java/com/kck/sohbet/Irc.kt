@@ -78,8 +78,8 @@ object Irc {
 
     private val prefs get() = appCtx.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
 
-    /** Seçilen kişilere sırayla gönderilen 5 mesaj. */
-    const val AUTO_COUNT = 5
+    /** Seçilen kişilere sırayla gönderilen 6 mesaj. */
+    const val AUTO_COUNT = 6
 
     fun autoMsg(i: Int): String {
         val p = prefs
@@ -144,63 +144,54 @@ object Irc {
 
     /** Kime ne zaman otomatik mesaj gitti (odaya tekrar girerse günde en fazla bir kez). */
     private val autoSent = HashMap<String, Long>()
-    /** type: 0 = ilk mesaj (hemen gider), 1 = sonraki mesajlar (arayla gider) */
-    private class AutoItem(val nick: String, val text: String, val type: Int)
-    private val autoQueue = ArrayDeque<AutoItem>()
-    private var autoBusy = false
+    /** due: mesajın gideceği zaman. 1. mesaj hemen, sonrakiler her biri bir öncekinden 30 sn sonra. */
+    private class AutoItem(val nick: String, val text: String, val due: Long)
+    private val autoQueue = ArrayList<AutoItem>()
+    private var autoScheduled = false
     private var lastAutoAt = 0L
-    private const val AUTO_GAP = 5000L
-    private const val AUTO_QUEUE_MAX = 60
+    /** Mesajlar arası bekleme (aynı kişiye) */
+    private const val AUTO_STEP = 30_000L
+    /** Aynı anda birkaç kişiye gidince sunucu flood saymasın diye gönderimler arası en az 1,2 sn */
+    private const val AUTO_FLOOD = 1200L
+    private const val AUTO_QUEUE_MAX = 150
 
     private fun isService(n: String) = n.endsWith("Serv", true) || n.contains('.')
 
-    private fun queueAuto(nick: String, text: String, type: Int) {
-        val item = AutoItem(nick, text, type)
-        if (type == 0) {
-            // İlk mesaj beklemesin: sıranın en önüne (diğer ilk mesajların arkasına) koy
-            val pos = autoQueue.indexOfFirst { it.type != 0 }.let { if (it < 0) autoQueue.size else it }
-            autoQueue.add(pos, item)
-            // Bekleyen gecikmeli gönderimi iptal et, hemen gönder
-            if (autoBusy) { main.removeCallbacks(pumpTask); autoBusy = false }
-        } else autoQueue.addLast(item)
-        pumpAuto()
-    }
-
-    private var lastOpenAt = 0L
-    /** Aynı anda birkaç kişiye gidince sunucu flood saymasın diye ilk mesajlar arası en az 1 sn */
-    private const val OPEN_GAP = 1000L
-
     private val pumpTask = Runnable { sendNextAuto() }
 
-    /** İlk mesaj hemen gider; diğer otomatik mesajlar sunucuya yüklenmemek için en az 5 sn arayla. */
+    /** Sıradaki en erken mesajı zamanlar. */
     private fun pumpAuto() {
-        if (autoBusy || autoQueue.isEmpty()) return
-        autoBusy = true
+        if (autoScheduled || autoQueue.isEmpty()) return
+        val next = autoQueue.minByOrNull { it.due } ?: return
+        autoScheduled = true
         val now = System.currentTimeMillis()
-        val wait = if (autoQueue.first().type == 0) maxOf(0L, lastOpenAt + OPEN_GAP - now)
-                   else maxOf(1500L, lastAutoAt + AUTO_GAP - now)
+        val wait = maxOf(0L, maxOf(next.due, lastAutoAt + AUTO_FLOOD) - now)
         if (wait == 0L) main.post(pumpTask) else main.postDelayed(pumpTask, wait)
     }
 
     private fun sendNextAuto() {
-        autoBusy = false
-        val item = autoQueue.removeFirstOrNull() ?: return
+        autoScheduled = false
+        val item = autoQueue.minByOrNull { it.due } ?: return
+        autoQueue.remove(item)
         if (state == 2 && isAutoPerson(item.nick) && !isBlocked(item.nick)) {
             send("PRIVMSG ${item.nick} :${item.text}")
             lastAutoAt = System.currentTimeMillis()
-            if (item.type == 0) lastOpenAt = lastAutoAt
             add(conv(item.nick)!!, myNick, "🤖 " + item.text, K_SELF)
         }
         pumpAuto()
     }
 
-    /** Seçilen kişiye 5 mesajı sırayla gönder (boş kutular atlanır). */
+    /** Seçilen kişiye 6 mesajı gönder: 1. hemen, diğerleri 30'ar sn arayla (boş kutular atlanır). */
     private fun startAuto(nick: String) {
         val list = autoMsgList()
         if (list.isEmpty() || state != 2) return
         if (autoQueue.size + list.size > AUTO_QUEUE_MAX) return
-        autoSent[key(bare(nick))] = System.currentTimeMillis()
-        list.forEachIndexed { i, t -> queueAuto(bare(nick), t, if (i == 0) 0 else 1) }
+        val now = System.currentTimeMillis()
+        autoSent[key(bare(nick))] = now
+        list.forEachIndexed { i, t -> autoQueue.add(AutoItem(bare(nick), t, now + i * AUTO_STEP)) }
+        // Bekleyen daha geç bir zamanlama varsa yeni (daha erken) mesaj için yeniden zamanla
+        if (autoScheduled) { main.removeCallbacks(pumpTask); autoScheduled = false }
+        pumpAuto()
     }
 
     /** Seçilmiş biri odaya (tekrar) girerse mesajlar ona da gider; aynı kişiye günde en fazla bir kez. */
@@ -315,6 +306,9 @@ object Irc {
             for (l in listeners.toList()) l.onIrcChanged()
         }, 120)
     }
+
+    /** Okunmamış özel mesaj sayısı (odalar ve sunucu mesajları hariç). */
+    fun pmUnread(): Int = convs.values.filter { !it.isChannel && !it.isStatus }.sumOf { it.unread }
 
     fun conv(name: String, create: Boolean = true): Conv? {
         val k = key(name)

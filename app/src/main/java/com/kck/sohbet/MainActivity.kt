@@ -264,6 +264,7 @@ class MainActivity : Activity(), Irc.Listener {
                 else -> "Bağlı değil"
             }
         )
+        b.pmAlert(Irc.pmUnread() > 0)
         b.actions.removeAllViews()
         if (Irc.state == 0) {
             b.action(smallButton("Yeniden bağlan") { reconnect() })

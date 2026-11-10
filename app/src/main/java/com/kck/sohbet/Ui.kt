@@ -103,6 +103,8 @@ class TopBar(ctx: Context, title: String, back: (() -> Unit)?) : LinearLayout(ct
     val titleView: TextView
     val subView: TextView
     val actions: LinearLayout
+    private val dot: View
+    private var blink: android.animation.ObjectAnimator? = null
 
     init {
         orientation = HORIZONTAL
@@ -124,8 +126,41 @@ class TopBar(ctx: Context, title: String, back: (() -> Unit)?) : LinearLayout(ct
         }
         col.addView(titleView); col.addView(subView)
         addView(col, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // Yeni özel mesaj gelince yanıp sönen kırmızı nokta
+        dot = View(ctx).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#FF1B1B"))
+                setStroke(ctx.dp(2), Color.WHITE)
+            }
+            visibility = GONE
+        }
+        addView(dot, LayoutParams(ctx.dp(16), ctx.dp(16)).apply { rightMargin = ctx.dp(6) })
         actions = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         addView(actions)
+    }
+
+    /** Okunmamış özel mesaj varken kırmızı nokta yanıp söner. */
+    fun pmAlert(on: Boolean) {
+        if (on) {
+            if (blink?.isRunning == true) return
+            dot.visibility = VISIBLE
+            blink = android.animation.ObjectAnimator.ofFloat(dot, "alpha", 1f, 0.1f).apply {
+                duration = 550
+                repeatCount = android.animation.ValueAnimator.INFINITE
+                repeatMode = android.animation.ValueAnimator.REVERSE
+                start()
+            }
+        } else {
+            blink?.cancel(); blink = null
+            dot.alpha = 1f
+            dot.visibility = GONE
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        blink?.cancel(); blink = null
+        super.onDetachedFromWindow()
     }
 
     fun sub(s: String) {

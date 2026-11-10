@@ -155,6 +155,7 @@ class ChatActivity : Activity(), Irc.Listener {
             }
         )
         usersBtn?.text = "👥 ${conv.users.size}"
+        bar.pmAlert(Irc.pmUnread() > 0)
         if (conv.msgs.size != count) {
             count = conv.msgs.size
             adapter.notifyDataSetChanged()
@@ -247,20 +248,34 @@ class ChatActivity : Activity(), Irc.Listener {
                 return@button
             }
             val checked = BooleanArray(names.size) { i -> picked.any { it.equals(names[i], true) } }
-            AlertDialog.Builder(this)
-                .setTitle("Kime gitsin?")
-                .setMultiChoiceItems(names.toTypedArray(), checked) { _, i, v -> checked[i] = v }
+            fun count() = checked.count { it }
+            val dlg = AlertDialog.Builder(this)
+                .setTitle("Kime gitsin? (${count()} seçili)")
+                .setMultiChoiceItems(names.toTypedArray(), checked, null)
                 .setPositiveButton("Tamam") { _, _ ->
                     picked.clear()
                     names.forEachIndexed { i, n -> if (checked[i]) picked.add(n) }
                     updatePicked()
                 }
+                .setNeutralButton("Tümü", null)
                 .setNegativeButton("Vazgeç", null)
-                .show()
+                .create()
+            dlg.show()
+            val lv = dlg.listView
+            lv.setOnItemClickListener { _, _, pos, _ ->
+                checked[pos] = lv.isItemChecked(pos)
+                dlg.setTitle("Kime gitsin? (${count()} seçili)")
+            }
+            // "Tümü": hepsi seçiliyse hepsini kaldır, değilse hepsini seç (listeyi kapatmadan)
+            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val all = checked.any { !it }
+                for (i in names.indices) { checked[i] = all; lv.setItemChecked(i, all) }
+                dlg.setTitle("Kime gitsin? (${count()} seçili)")
+            }
         })
 
-        // Bölüm 2: 5 mesaj
-        section("Bölüm 2 • Mesajlar", "Seçilen kişiye 1. mesaj hemen, diğerleri sırayla (en az 5 saniye arayla) gider. Boş bıraktığın kutu atlanır.")
+        // Bölüm 2: 6 mesaj
+        section("Bölüm 2 • Mesajlar", "Seçilen kişiye 1. mesaj hemen gider, sonraki mesajlar her biri 30 saniye arayla gider. Boş bıraktığın kutu atlanır.")
         val msgs = ArrayList<android.widget.EditText>()
         for (i in 0 until Irc.AUTO_COUNT) {
             box.addView(text("${i + 1}. mesaj", 14f, C.TEXT).apply { setPadding(0, dp(10), 0, dp(4)) })
