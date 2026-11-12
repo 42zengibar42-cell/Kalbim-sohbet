@@ -116,6 +116,14 @@ object Irc {
     }
 
 
+    /** Sıfırla: seçilen kişileri, bekleyen mesaj sırasını ve "kime ne zaman gitti" kaydını temizler. */
+    fun resetAuto() {
+        prefs.edit().remove("otoKisiler").apply()
+        autoQueue.clear()
+        autoSent.clear()
+        if (autoScheduled) { main.removeCallbacks(pumpTask); autoScheduled = false }
+    }
+
     // ---------------- Engelleme ----------------
 
     fun blocked(): Set<String> = prefs.getStringSet("engelliler", emptySet())!!

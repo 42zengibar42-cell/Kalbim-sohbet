@@ -279,6 +279,48 @@ class ChatActivity : Activity(), Irc.Listener {
             }
         })
 
+        // Toplu silme ve sıfırlama (kalıcı olarak "Kaydet"e basınca uygulanır)
+        var resetAll = false
+        box.addView(button("🗑 Seçilenlerden sil") {
+            if (picked.isEmpty()) {
+                android.widget.Toast.makeText(this, "Silinecek kimse yok", android.widget.Toast.LENGTH_SHORT).show()
+                return@button
+            }
+            val names = picked.sortedBy { it.lowercase() }
+            val checked = BooleanArray(names.size)
+            fun count() = checked.count { it }
+            val dlg = AlertDialog.Builder(this)
+                .setTitle("Kimler silinsin? (0 seçili)")
+                .setMultiChoiceItems(names.toTypedArray(), checked, null)
+                .setPositiveButton("Sil") { _, _ ->
+                    names.forEachIndexed { i, n -> if (checked[i]) picked.remove(n) }
+                    updatePicked()
+                }
+                .setNeutralButton("Tümü", null)
+                .setNegativeButton("Vazgeç", null)
+                .create()
+            dlg.show()
+            val lv = dlg.listView
+            lv.setOnItemClickListener { _, _, pos, _ ->
+                checked[pos] = lv.isItemChecked(pos)
+                dlg.setTitle("Kimler silinsin? (${count()} seçili)")
+            }
+            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val allOn = checked.any { !it }
+                for (i in names.indices) { checked[i] = allOn; lv.setItemChecked(i, allOn) }
+                dlg.setTitle("Kimler silinsin? (${count()} seçili)")
+            }
+        })
+        box.addView(button("♻ Sıfırla (hepsini kaldır)") {
+            AlertDialog.Builder(this)
+                .setMessage("Seçilen tüm kişiler kaldırılsın ve gönderim geçmişi sıfırlansın mı? (Kaydet'e basınca uygulanır)")
+                .setPositiveButton("Sıfırla") { _, _ ->
+                    picked.clear(); resetAll = true; updatePicked()
+                }
+                .setNegativeButton("Vazgeç", null)
+                .show()
+        })
+
         // Bölüm 2: 6 mesaj
         section("Bölüm 2 • Mesajlar", "Seçilen kişiye 1. mesaj hemen gider, sonraki mesajlar her biri 30 saniye arayla gider. Boş bıraktığın kutu atlanır.")
         val msgs = ArrayList<android.widget.EditText>()
@@ -302,6 +344,7 @@ class ChatActivity : Activity(), Irc.Listener {
                 val enable = on.isChecked && (picked.isNotEmpty() || all.isChecked) && msgs.any { clean(it).isNotEmpty() }
                 Irc.setAutoOn(conv.name, enable)
                 Irc.setAutoAll(conv.name, enable && all.isChecked)
+                if (resetAll) Irc.resetAuto()
                 Irc.setAutoPeople(picked, enable)
                 android.widget.Toast.makeText(this,
                     if (enable) "Otomatik mesaj açık • ${picked.size} kişi" + if (all.isChecked) " + yeni girenler" else "" else "Otomatik mesaj kapalı",
